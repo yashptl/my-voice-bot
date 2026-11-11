@@ -207,3 +207,29 @@ describe("gateSentence: product names and split numbers", () => {
     expect(pass("Call 416. 555. 1234 now.").blocked).toContain("phone");
   });
 });
+
+describe("gateSentence: normalization", () => {
+  it.each([
+    ["phone", "Call 416\u200b555\u200b1234 now."],
+    ["url", "Visit evil\u200b.com today."],
+    ["phone", "Call \uff14\uff11\uff16 \uff15\uff15\uff15 \uff11\uff12\uff13\uff14 now."],
+    ["url", "\uff45\uff56\uff49\uff4c\uff0e\uff43\uff4f\uff4d"],
+    ["url", "Visit evil\u{E0041}.com today."],
+  ])("%s: blocks %j", (reason, text) => {
+    expect(pass(text).blocked).toContain(reason);
+  });
+
+  it("returns the normalized text, which is what is shown", () => {
+    expect(pass("Yash\u200b works\uff01").text).toBe("Yash works!");
+  });
+});
+
+describe("gateSentence: product names", () => {
+  it.each(["Try evil-socket.io today.", "Try x.socket.io today.", "Try my-asp.net today."])("blocks %j", (text) => {
+    expect(pass(text).blocked).toContain("url");
+  });
+
+  it.each(["Yash uses Socket.io daily.", "Yash writes ASP.NET services."])("passes %j", (text) => {
+    expect(pass(text).blocked).toEqual([]);
+  });
+});

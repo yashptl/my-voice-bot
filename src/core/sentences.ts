@@ -28,6 +28,16 @@ function isAbbreviation(text: string, dot: number): boolean {
   return INITIALISM.test(token) || INITIAL.test(token) || ABBREVIATIONS.has(token.slice(0, -1).toLowerCase());
 }
 
+/** Digit groups of a phone number have at most this many digits before their period ("416.", "555."). */
+const MAX_GROUP_DIGITS = 3;
+
+/** How many digits run up to (not including) `end`. */
+function digitsBefore(text: string, end: number): number {
+  let n = 0;
+  while (n < end && DIGIT.test(text.charAt(end - 1 - n))) n++;
+  return n;
+}
+
 function wordCount(text: string): number {
   return text.split(/\s+/).filter((w) => WORDLIKE.test(w)).length;
 }
@@ -124,9 +134,18 @@ export class SentenceSplitter {
         while (k < s.length && (s.charAt(k) === " " || s.charAt(k) === "\t")) k++;
         if (k === s.length) return null; // undecided until the next word starts
         // A lowercase next word means the thought goes on: "approx. two", 'asked "why?" and'.
-        // A number's period before another number ("416. 555. 1234") is a separator, not a sentence end.
-        const numberRun = run === "." && DIGIT.test(s.charAt(i - 1)) && DIGIT.test(s.charAt(k));
-        if ((run === "." && isAbbreviation(s, i)) || numberRun || LOWERCASE.test(s.charAt(k))) {
+        // A short digit group's period before another number ("416. 555. 1234", also across
+        // newlines) is a separator, not a sentence end; a year's ("in 2022. 2023 was") is an end.
+        if (run === "." && DIGIT.test(s.charAt(i - 1)) && digitsBefore(s, i) <= MAX_GROUP_DIGITS) {
+          let m = k;
+          while (m < s.length && WHITESPACE.test(s.charAt(m))) m++;
+          if (m === s.length) return null; // undecided until the next word starts
+          if (DIGIT.test(s.charAt(m))) {
+            i = m - 1;
+            continue;
+          }
+        }
+        if ((run === "." && isAbbreviation(s, i)) || LOWERCASE.test(s.charAt(k))) {
           i = j - 1;
           continue;
         }

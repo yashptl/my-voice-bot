@@ -173,16 +173,18 @@ describe("ceiling and turnsPerIp", () => {
 
   it("accept a JSON number, as wrangler.jsonc passes it, the same as the string", () => {
     const log = vi.fn();
-    expect(ceiling(env({ DAILY_TURNS: 400 }), "turns", log)).toBe(400);
-    expect(ceiling(env({ DAILY_TTS_CHARS: 0 }), "tts_chars", log)).toBe(0);
-    expect(turnsPerIp(env({ DAILY_TURNS_PER_IP: 10 }), log)).toBe(10);
+    // Env types vars as strings; wrangler passes a JSON number through as a number.
+    const asVar = (v: unknown) => v as string;
+    expect(ceiling(env({ DAILY_TURNS: asVar(400) }), "turns", log)).toBe(400);
+    expect(ceiling(env({ DAILY_TTS_CHARS: asVar(0) }), "tts_chars", log)).toBe(0);
+    expect(turnsPerIp(env({ DAILY_TURNS_PER_IP: asVar(10) }), log)).toBe(10);
     expect(log).not.toHaveBeenCalled();
   });
 
   it("count a number that is not a whole number, or any other non-string, as 0 (paused), logged", () => {
     for (const v of [1.5, -5, NaN, 1e21, null, true, {}]) {
       const log = vi.fn();
-      expect(ceiling(env({ DAILY_TURNS: v }), "turns", log), String(v)).toBe(0);
+      expect(ceiling(env({ DAILY_TURNS: v as unknown as string }), "turns", log), String(v)).toBe(0);
       expect(log).toHaveBeenCalledWith("error", expect.stringMatching(/^DAILY_TURNS is not a whole number/));
     }
   });

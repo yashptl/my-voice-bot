@@ -1,3 +1,4 @@
+import { normalizeText } from "./sanitize";
 import { GATE_FLAGS, GATE_REASONS, type GateFlag, type GateReason, type GateSummary } from "../protocol/turn-record";
 
 /** Shown in place of an answer whose every sentence the gate dropped. It passes the gate itself. */
@@ -13,7 +14,7 @@ const MIN_PHONE_DIGITS = 10;
 
 const URL = /\bhttps?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|dev|io|ai|org|net|app|co|in|me)\b/i;
 /** Dotted product names that look like a domain but are not links; removed before the URL rule runs. */
-const PRODUCT_NAMES = /\b(?:socket\.io|asp\.net)\b(?!\.?[a-z0-9-])/gi;
+const PRODUCT_NAMES = /(?<![\w.-])\b(?:socket\.io|asp\.net)\b(?!\.?[a-z0-9-])/gi;
 const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 /** A digit run with separators; it is a phone number only with enough digits ("2021-2023" is not). */
 const PHONE_LIKE = /\+?\d[\d\s().-]{6,}\d/g;
@@ -112,7 +113,8 @@ function copies(sentence: string[], visitor: string[]): boolean {
 }
 
 /**
- * Checks one sentence before it is shown or spoken. Patterns run on both the raw sentence and the
+ * Checks one sentence before it is shown or spoken. The sentence is NFKC-normalized and stripped of
+ * invisible characters first, and the returned text is the normalized one. Patterns run on both the raw sentence and the
  * markdown-stripped one: stripping can hide a code fence ("```"), and it can also reveal what the
  * markdown broke up ("evil**.**com" is shown as "evil.com"). Word counts run on the text the visitor
  * sees. Blocked sentences are dropped whole: a contact detail, code, profanity or the visitor's own
@@ -120,7 +122,9 @@ function copies(sentence: string[], visitor: string[]): boolean {
  * pronouns only flag, since dropping a good sentence for its style would cost more than it saves;
  * markdown is stripped and he or she becomes Yash, so the visitor never sees either.
  */
-export function gateSentence(text: string, visitorMessage: string): GateResult {
+export function gateSentence(rawText: string, visitorMessage: string): GateResult {
+  // Zero-width characters and fullwidth look-alikes must not hide a number or a domain from the checks below.
+  const text = normalizeText(rawText);
   const clean = stripMarkdown(text);
   const shown = namePronouns(clean);
   const shownWords = words(shown);

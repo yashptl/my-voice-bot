@@ -243,6 +243,21 @@ describe("respond", () => {
     expect(events.filter((e) => e.type === "reasoning")).toEqual([{ type: "reasoning" }]);
   });
 
+  it("parses a data line fenced inside <meta>, and hides a line-start <meta> with prose fields", async () => {
+    const data = '{"refs":["role:magenta"],"coverage":"direct"}';
+    const fenced = await collect(
+      respond(base(createFakeLlm({ reply: () => "Yash worked at Magenta Connect.<meta>```json" + data + "```</meta>", chunkChars: 4 }))),
+    );
+    expect(fenced.filter((e) => e.type === "sentence")).toEqual([{ type: "sentence", id: 0, text: "Yash worked at Magenta Connect." }]);
+    expect(fenced.find((e) => e.type === "meta")).toMatchObject({ dataLine: "ok", data: { refs: ["role:magenta"], coverage: "direct" } });
+
+    const prose = await collect(
+      respond(base(createFakeLlm({ reply: () => "Yash worked at Magenta Connect.\n<meta>refs: role:magenta; coverage: direct</meta>", chunkChars: 4 }))),
+    );
+    expect(prose.filter((e) => e.type === "sentence")).toEqual([{ type: "sentence", id: 0, text: "Yash worked at Magenta Connect." }]);
+    expect(prose.find((e) => e.type === "meta")).toMatchObject({ dataLine: "invalid" });
+  });
+
   it("reports a malformed data line as meta with data null and an error", async () => {
     const events = await collect(respond(base(createFakeLlm({ reply: () => "Yash builds agents.\n<meta>{oops</meta>" }))));
     const meta = events.find((e) => e.type === "meta");

@@ -149,7 +149,7 @@ describe("SentenceSplitter: fragments without letters", () => {
   });
 
   it("joins a letterless line to the sentence after it", () => {
-    expect(split("Done.\n416.\n555.\n1234\nThanks.")).toEqual(["Done.", "416. 555. 1234 Thanks."]);
+    expect(split("Done.\n416.\n555.\n1234\nThanks.")).toEqual(["Done.", "416.\n555.\n1234 Thanks."]);
   });
 
   it("flushes a trailing letterless fragment", () => {
@@ -164,6 +164,23 @@ describe("SentenceSplitter: fragments without letters", () => {
     const text = "Call 416. 555. 1234 now. Then wait.";
     for (let size = 1; size < text.length; size++) {
       expect(split(text, size), `chunk size ${size}`).toEqual(["Call 416. 555. 1234 now.", "Then wait."]);
+    }
+  });
+});
+
+describe("SentenceSplitter: digit groups", () => {
+  it("splits after a year, where the next sentence starts with a number", () => {
+    expect(split("Yash joined in 2022. 2023 brought a new role.")).toEqual(["Yash joined in 2022.", "2023 brought a new role."]);
+  });
+
+  it("joins a phone number across spaces or newlines", () => {
+    expect(split("Call 416. 555. 1234 now.")).toEqual(["Call 416. 555. 1234 now."]);
+    expect(split("Call me at 416.\n555.\n1234 now.")).toEqual(["Call me at 416.\n555.\n1234 now."]);
+  });
+
+  it("gives the same sentences for every chunk size", () => {
+    for (const text of ["Call me at 416.\n555.\n1234 now.", "Yash joined in 2022. 2023 brought a new role."]) {
+      for (let size = 1; size < text.length; size++) expect(split(text, size), `${size}: ${text}`).toEqual(split(text));
     }
   });
 });

@@ -273,3 +273,30 @@ describe("ReplySplitter: a literal <meta> in prose", () => {
     expect(run([`Hi.\n<meta>${META}`])).toMatchObject({ prose: "Hi.\n", meta: META });
   });
 });
+
+describe("ReplySplitter: <meta> before a fence, or at the start of a line", () => {
+  const FENCED = "```json" + META + "```";
+
+  it("starts the data line at <meta> followed by a code fence", () => {
+    expect(run(["Yash worked at Amazon.", `<meta>${FENCED}</meta>`])).toMatchObject({ prose: "Yash worked at Amazon.", meta: FENCED });
+  });
+
+  it("starts the data line at <meta> at the start of a line, whatever follows", () => {
+    expect(run(["Hi.\n<meta>refs: role:amazon; coverage: direct</meta>"])).toMatchObject({
+      prose: "Hi.\n",
+      meta: "refs: role:amazon; coverage: direct",
+    });
+    expect(run(["<meta>words</meta>"])).toMatchObject({ prose: "", meta: "words" });
+  });
+
+  it("keeps a mid-sentence <meta> before words as prose", () => {
+    expect(run(["Use the <meta> tag."]).prose).toBe("Use the <meta> tag.");
+  });
+
+  it("gives the same result for every chunk size", () => {
+    for (const text of [`Hi.<meta>${FENCED}</meta>`, "Hi.\n  <meta>refs: a</meta>", "Use <meta> tag.\n<meta>x</meta>"]) {
+      const whole = run([text]);
+      for (let size = 1; size < text.length; size++) expect(run(chunk(text, size)), `${size}: ${text}`).toEqual(whole);
+    }
+  });
+});

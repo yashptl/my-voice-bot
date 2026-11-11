@@ -32,16 +32,28 @@ const FENCE_OPENER = /```[a-z]*\s*$/i;
 /** A key of the data line, quoted as JSON writes it: what makes a `{` line a data line. */
 const DATA_LINE_KEY = new RegExp(`"(?:${Object.keys(DataLineSchema.shape).join("|")})"\\s*:`);
 
+/** A code fence, which may open the data line right after `<meta>`. */
+const FENCE = "```";
+
 /**
- * The first `<meta>` that starts the data line: one whose next non-whitespace character is `{`
- * (`decided`; an empty `<meta></meta>` counts too), or one with only whitespace or part of `</meta>` after it so far (undecided: the next chunk settles it).
- * A `<meta>` followed by anything else is prose and is skipped.
+ * The first `<meta>` that starts the data line, which is one that
+ * (a) has `{` or a code fence as its next non-whitespace text (an empty `<meta></meta>` counts too), or
+ * (b) is at the start of a line (only whitespace since the last newline, or at the start of the reply).
+ * Those are `decided`. Otherwise one with only whitespace, part of `</meta>` or part of a fence after it
+ * so far is undecided: the next chunk settles it. Any other `<meta>` is prose and is skipped.
+ * `lineStart` says whether `text` itself begins a line.
  */
-function findOpen(text: string): { at: number; decided: boolean } | null {
+function findOpen(text: string, lineStart: boolean): { at: number; decided: boolean } | null {
   for (const m of text.matchAll(OPEN_RE)) {
+    const before = text.slice(0, m.index);
+    const newline = before.lastIndexOf("\n");
+    const atLineStart = /^[ \t\r]*$/.test(before.slice(newline + 1)) && (newline >= 0 || lineStart);
     const rest = text.slice(m.index + OPEN.length).trimStart().toLowerCase();
-    if (rest.startsWith("{") || rest.startsWith(CLOSE)) return { at: m.index, decided: true };
-    if (CLOSE.startsWith(rest)) return { at: m.index, decided: false }; // "" or part of "</meta>"
+    if (atLineStart || rest.startsWith("{") || rest.startsWith(FENCE) || rest.startsWith(CLOSE)) {
+      return { at: m.index, decided: true };
+    }
+    // "" or part of "</meta>" or of a fence
+    if (CLOSE.startsWith(rest) || FENCE.startsWith(rest)) return { at: m.index, decided: false };
   }
   return null;
 }
@@ -88,9 +100,9 @@ function bareDataLine(held: string): string | null {
  *
  * `push` returns the prose that is safe to show or speak now. It holds back a trailing piece that
  * could be the start of `<meta>` (at most 5 characters), so prose such as "latency < 1 s" flows
- * straight through, and a tag split across chunks never leaks. `<meta>` starts the data line only
- * when the next non-whitespace character is `{`: it is held from the tag on until that character
- * shows, and any other character makes it prose ("use the <meta> tag"). Everything after the data
+ * straight through, and a tag split across chunks never leaks. `<meta>` starts the data line when it
+ * is at the start of a line, or when the next non-whitespace text is `{` or a code fence: elsewhere it
+ * is held from the tag on until that settles, and any other character makes it prose ("use the <meta> tag"). Everything after the data
  * line's `<meta>` is meta. Tags match case-insensitively.
  *
  * Models sometimes drop the tags and end with the bare JSON, or a fenced JSON block. So a line that
@@ -127,7 +139,7 @@ export class ReplySplitter {
     const lineStart = this.atLineStart;
     this.held = "";
 
-    const found = findOpen(text);
+    const found = findOpen(text, lineStart);
     if (found && !found.decided) {
       // `<meta>` with nothing after it yet: show the prose before it, hold the rest until a character settles it.
       const prose = this.push(text.slice(0, found.at));
@@ -170,7 +182,10 @@ export class ReplySplitter {
     }
     const cut = text.length - partialOpenLength(text);
     this.held = text.slice(cut);
-    this.atLineStart = cut === 0 ? lineStart : text[cut - 1] === "\n";
+    // The held part is at a line start when only whitespace lies between it and the last newline.
+    const before = text.slice(0, cut);
+    const newline = before.lastIndexOf("\n");
+    this.atLineStart = /^[ \t\r]*$/.test(before.slice(newline + 1)) && (newline >= 0 || lineStart);
     return text.slice(0, cut);
   }
 
