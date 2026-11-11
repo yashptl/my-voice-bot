@@ -332,6 +332,12 @@ body {
   font-size: 0.875rem;
 }
 
+.disclosure {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 .footnote {
   margin: 8px 0 0;
   color: var(--muted);
