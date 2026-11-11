@@ -3,12 +3,17 @@ import { GATE_FLAGS, GATE_REASONS, type GateFlag, type GateReason, type GateSumm
 /** Shown in place of an answer whose every sentence the gate dropped. It passes the gate itself. */
 export const GATE_FALLBACK = "I can't share that here. Messages is the best way to reach Yash.";
 
+/** Shown when the reply had nothing to show and the gate dropped nothing. It passes the gate itself. */
+export const EMPTY_FALLBACK = "Sorry, I couldn't put an answer together. Could you ask that again?";
+
 /** Copying this many consecutive words from the visitor means the model is repeating what it was fed. */
 const COPY_WORDS = 10;
 const MAX_WORDS = 60;
 const MIN_PHONE_DIGITS = 10;
 
 const URL = /\bhttps?:\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|dev|io|ai|org|net|app|co|in|me)\b/i;
+/** Dotted product names that look like a domain but are not links; removed before the URL rule runs. */
+const PRODUCT_NAMES = /\b(?:socket\.io|asp\.net)\b(?!\.?[a-z0-9-])/gi;
 const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 /** A digit run with separators; it is a phone number only with enough digits ("2021-2023" is not). */
 const PHONE_LIKE = /\+?\d[\d\s().-]{6,}\d/g;
@@ -120,9 +125,12 @@ export function gateSentence(text: string, visitorMessage: string): GateResult {
   const shown = namePronouns(clean);
   const shownWords = words(shown);
   const visitorWords = words(visitorMessage);
-  const either = (pattern: RegExp) => pattern.test(text) || pattern.test(clean);
+  const either = (test: RegExp | ((t: string) => boolean)) => {
+    const run = typeof test === "function" ? test : (t: string) => test.test(t);
+    return run(text) || run(clean);
+  };
   const hits: Record<GateReason, boolean> = {
-    url: either(URL),
+    url: either((t) => URL.test(t.replace(PRODUCT_NAMES, ""))),
     email: either(EMAIL),
     phone: hasPhone(text) || hasPhone(clean),
     code: CODE.some(either),

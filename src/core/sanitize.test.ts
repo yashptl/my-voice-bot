@@ -44,3 +44,13 @@ describe("sanitizeInput", () => {
     expect(out).not.toMatch(LONE_HIGH_SURROGATE);
   });
 });
+
+describe("sanitizeInput: format characters", () => {
+  it("strips a soft hyphen and other Cf characters", () => {
+    expect(sanitizeInput("a\u00ADb\u061Cc\u180Ed\u2062e")).toBe("abcde");
+  });
+
+  it("NFKC-normalizes, so a fullwidth underscore becomes _", () => {
+    expect(sanitizeInput("visitor\uFF3Fmessage")).toBe("visitor_message");
+  });
+});

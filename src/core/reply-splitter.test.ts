@@ -236,3 +236,40 @@ describe("ReplySplitter", () => {
     expect(end.refs).toBe("role:magenta, skill:rag");
   });
 });
+
+describe("ReplySplitter: a literal <meta> in prose", () => {
+  it("treats <meta> not followed by { as prose", () => {
+    const r = run(["Use the <meta> tag for SEO.\n", `<meta>${META}</meta>`]);
+    expect(r.prose).toBe("Use the <meta> tag for SEO.\n");
+    expect(r.meta).toBe(META);
+  });
+
+  it("decides across chunks: <meta> at the end of one chunk, { at the start of the next", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi.\n<meta>")).toBe("Hi.\n");
+    expect(splitter.push(`${META}</meta>`)).toBe("");
+    expect(splitter.end().meta).toBe(META);
+  });
+
+  it("holds <meta> plus whitespace until the next character shows", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi. <meta> ")).toBe("Hi. ");
+    expect(splitter.push("tags matter.")).toBe("<meta> tags matter.");
+    expect(splitter.end()).toEqual({ meta: null, prose: "" });
+  });
+
+  it("releases a held <meta> as prose at the end of the reply", () => {
+    expect(run(["Use <meta>"])).toEqual({ prose: "Use <meta>", meta: null, refs: undefined });
+  });
+
+  it("gives the same result for every chunk size", () => {
+    const text = `Use the <meta> tag. It helps.\n<meta>${META}</meta>`;
+    for (let size = 1; size < text.length; size++) {
+      expect(run(chunk(text, size)), `chunk size ${size}`).toEqual({ prose: "Use the <meta> tag. It helps.\n", meta: META, refs: undefined });
+    }
+  });
+
+  it("keeps a missing closing tag working", () => {
+    expect(run([`Hi.\n<meta>${META}`])).toMatchObject({ prose: "Hi.\n", meta: META });
+  });
+});

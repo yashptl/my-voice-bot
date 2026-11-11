@@ -1,7 +1,8 @@
 import { DataLineSchema } from "../protocol/data-line";
 
 const OPEN = "<meta>";
-const OPEN_RE = /<meta>/i;
+const OPEN_RE = /<meta>/gi;
+const CLOSE = "</meta>";
 const CLOSE_RE = /<\/meta>/i;
 /** A bare list of refs that some replies end with instead of the data line. */
 const REFS_OPEN = "<refs>";
@@ -30,6 +31,20 @@ const BLANK_START = /^[ \t]*$/;
 const FENCE_OPENER = /```[a-z]*\s*$/i;
 /** A key of the data line, quoted as JSON writes it: what makes a `{` line a data line. */
 const DATA_LINE_KEY = new RegExp(`"(?:${Object.keys(DataLineSchema.shape).join("|")})"\\s*:`);
+
+/**
+ * The first `<meta>` that starts the data line: one whose next non-whitespace character is `{`
+ * (`decided`; an empty `<meta></meta>` counts too), or one with only whitespace or part of `</meta>` after it so far (undecided: the next chunk settles it).
+ * A `<meta>` followed by anything else is prose and is skipped.
+ */
+function findOpen(text: string): { at: number; decided: boolean } | null {
+  for (const m of text.matchAll(OPEN_RE)) {
+    const rest = text.slice(m.index + OPEN.length).trimStart().toLowerCase();
+    if (rest.startsWith("{") || rest.startsWith(CLOSE)) return { at: m.index, decided: true };
+    if (CLOSE.startsWith(rest)) return { at: m.index, decided: false }; // "" or part of "</meta>"
+  }
+  return null;
+}
 
 /** Length of the longest suffix of `text` that could still grow into `<meta>` or `<refs>`. */
 function partialOpenLength(text: string): number {
@@ -73,8 +88,10 @@ function bareDataLine(held: string): string | null {
  *
  * `push` returns the prose that is safe to show or speak now. It holds back a trailing piece that
  * could be the start of `<meta>` (at most 5 characters), so prose such as "latency < 1 s" flows
- * straight through, and a tag split across chunks never leaks. Everything after `<meta>` is meta.
- * Tags match case-insensitively.
+ * straight through, and a tag split across chunks never leaks. `<meta>` starts the data line only
+ * when the next non-whitespace character is `{`: it is held from the tag on until that character
+ * shows, and any other character makes it prose ("use the <meta> tag"). Everything after the data
+ * line's `<meta>` is meta. Tags match case-insensitively.
  *
  * Models sometimes drop the tags and end with the bare JSON, or a fenced JSON block. So a line that
  * starts with `{` or a backtick is held until the reply ends: if it is JSON with a data-line key
@@ -110,8 +127,15 @@ export class ReplySplitter {
     const lineStart = this.atLineStart;
     this.held = "";
 
-    const open = text.search(OPEN_RE);
-    if (open >= 0) {
+    const found = findOpen(text);
+    if (found && !found.decided) {
+      // `<meta>` with nothing after it yet: show the prose before it, hold the rest until a character settles it.
+      const prose = this.push(text.slice(0, found.at));
+      this.held += text.slice(found.at);
+      return prose;
+    }
+    if (found) {
+      const open = found.at;
       // A held line was prose after all; a code fence opened for the data line is not.
       this.meta = text.slice(open + OPEN.length);
       this.candidate = false;

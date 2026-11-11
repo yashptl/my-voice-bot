@@ -188,3 +188,22 @@ describe("GATE_FALLBACK", () => {
     expect(gateSentence("</meta> Yash builds agents.", "").text).toBe("Yash builds agents.");
   });
 });
+
+describe("gateSentence: product names and split numbers", () => {
+  it.each([
+    "Yash built the chat with Socket.io.",
+    "Yash wrote services in ASP.NET for years.",
+    "Yash used socket.io and asp.net together.",
+  ])("passes the product name in %j", (text) => {
+    expect(pass(text).blocked).toEqual([]);
+  });
+
+  it("still blocks a link that sits next to a product name", () => {
+    expect(pass("Yash used Socket.io, see yashos.dev.").blocked).toContain("url");
+    expect(pass("Try mysocket.io today.").blocked).toContain("url");
+  });
+
+  it("blocks a phone number that was split into fragments once it is joined", () => {
+    expect(pass("Call 416. 555. 1234 now.").blocked).toContain("phone");
+  });
+});

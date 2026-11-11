@@ -139,3 +139,31 @@ describe("SentenceSplitter", () => {
     }
   });
 });
+
+describe("SentenceSplitter: fragments without letters", () => {
+  it("joins a split phone number so it reaches the gate whole", () => {
+    expect(split("Call 416. 555. 1234 any time.")).toEqual(["Call 416. 555. 1234 any time."]);
+    expect(split("416. 555. 1234. Then wait.")).toEqual(["416. 555. 1234. Then wait."]);
+    expect(split("Yash is on 416. 555. 1234")).toEqual(["Yash is on 416. 555. 1234"]);
+    expect(split("416. 555. 1234")).toEqual(["416. 555. 1234"]);
+  });
+
+  it("joins a letterless line to the sentence after it", () => {
+    expect(split("Done.\n416.\n555.\n1234\nThanks.")).toEqual(["Done.", "416. 555. 1234 Thanks."]);
+  });
+
+  it("flushes a trailing letterless fragment", () => {
+    expect(split("Yash joined. 2021.")).toEqual(["Yash joined.", "2021."]);
+  });
+
+  it("still splits a sentence that ends in a year", () => {
+    expect(split("Yash joined in 2021. The team grew.")).toEqual(["Yash joined in 2021.", "The team grew."]);
+  });
+
+  it("gives the same sentences for every chunk size", () => {
+    const text = "Call 416. 555. 1234 now. Then wait.";
+    for (let size = 1; size < text.length; size++) {
+      expect(split(text, size), `chunk size ${size}`).toEqual(["Call 416. 555. 1234 now.", "Then wait."]);
+    }
+  });
+});

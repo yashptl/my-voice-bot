@@ -4,6 +4,8 @@ const CLAUSE_BREAKS = ",;:—";
 const OPENERS = /^["'([“‘«]+/;
 const WHITESPACE = /\s/;
 const LOWERCASE = /\p{Ll}/u;
+const DIGIT = /\d/;
+const LETTER = /\p{L}/u;
 const WORDLIKE = /[\p{L}\p{N}]/u;
 
 /** Words that end in a period mid-sentence (lowercase, without the period). */
@@ -51,9 +53,11 @@ function longTail(tail: string): boolean | null {
  * Turns streamed prose into sentences for captions and speech.
  *
  * A sentence ends at a newline, or at `.`, `!`, `?` or `…` (plus any closing quotes or brackets)
- * followed by whitespace and then a character that is not a lowercase letter. A lone period after an
+ * followed by whitespace and then a character that is not a lowercase letter. A period between two numbers ("416. 555.") does not end one. A lone period after an
  * abbreviation ("e.g.", "U.S.", "Dr.") never ends one, and a period inside a token ("1.5",
- * "Node.js") is never followed by whitespace. Nothing is decided until the character that settles it
+ * "Node.js") is never followed by whitespace. A piece with no letters ("416.", "555.", "1234") is
+ * never a sentence of its own: it is joined to the sentence after it (or flushed at the end), so a
+ * number split at its periods reaches the output gate whole. Nothing is decided until the character that settles it
  * has arrived, so the output is the same however the text is chunked.
  *
  * To start speaking sooner, the first sentence of a reply may be cut early at a comma, semicolon,
@@ -65,6 +69,8 @@ export class SentenceSplitter {
   private readonly firstClauseMinWords: number;
   private buffer = "";
   private first = true;
+  /** Letterless pieces waiting for the sentence they belong to. */
+  private pending = "";
 
   constructor(o: { firstClauseMinWords?: number } = {}) {
     this.firstClauseMinWords = o.firstClauseMinWords ?? 6;
@@ -76,18 +82,23 @@ export class SentenceSplitter {
     for (let cut = this.findCut(); cut; cut = this.findCut()) {
       const sentence = this.buffer.slice(0, cut.end).trim();
       this.buffer = this.buffer.slice(cut.next);
-      if (sentence) {
-        out.push(sentence);
-        this.first = false;
+      if (!sentence) continue;
+      if (!LETTER.test(sentence)) {
+        this.pending += `${sentence} `;
+        continue;
       }
+      out.push(this.pending + sentence);
+      this.pending = "";
+      this.first = false;
     }
     return out;
   }
 
   /** Ends the reply: returns whatever is left as the last sentence and resets the splitter. */
   flush(): string[] {
-    const rest = this.buffer.trim();
+    const rest = (this.pending + this.buffer.trim()).trim();
     this.buffer = "";
+    this.pending = "";
     this.first = true;
     return rest ? [rest] : [];
   }
@@ -113,7 +124,9 @@ export class SentenceSplitter {
         while (k < s.length && (s.charAt(k) === " " || s.charAt(k) === "\t")) k++;
         if (k === s.length) return null; // undecided until the next word starts
         // A lowercase next word means the thought goes on: "approx. two", 'asked "why?" and'.
-        if ((run === "." && isAbbreviation(s, i)) || LOWERCASE.test(s.charAt(k))) {
+        // A number's period before another number ("416. 555. 1234") is a separator, not a sentence end.
+        const numberRun = run === "." && DIGIT.test(s.charAt(i - 1)) && DIGIT.test(s.charAt(k));
+        if ((run === "." && isAbbreviation(s, i)) || numberRun || LOWERCASE.test(s.charAt(k))) {
           i = j - 1;
           continue;
         }
