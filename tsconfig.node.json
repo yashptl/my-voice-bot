@@ -15,5 +15,7 @@
     "src/knowledge",
     "*.config.ts",
     "**/*.test.ts"
-  ]
+  ],
+  // Client tests need DOM types: tsconfig.client.json checks them.
+  "exclude": ["src/client", "playground", "node_modules"]
 }

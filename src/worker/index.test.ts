@@ -6,7 +6,7 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
-import { spend, utcDay } from "./ledger";
+import { spend, spendVisitor, utcDay } from "./ledger";
 import { recordTurn } from "./turn-log";
 
 // The Durable Object class needs workerd; the routes only talk to it through its namespace stub.
@@ -50,7 +50,14 @@ function brokenDb(): D1Database {
 }
 
 function setup(
-  o: { allow?: boolean; mode?: Env["ASSISTANT_MODE"]; secret?: string | null; db?: D1Database; answer?: ServerEvent[] } = {},
+  o: {
+    allow?: boolean;
+    mode?: Env["ASSISTANT_MODE"];
+    secret?: string | null;
+    ipHashKey?: string | null;
+    db?: D1Database;
+    answer?: ServerEvent[];
+  } = {},
 ) {
   const keys: string[] = [];
   const forwarded: Request[] = [];
@@ -60,7 +67,11 @@ function setup(
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: "400",
+    DAILY_VOICE_SECONDS: "1800",
+    DAILY_TTS_CHARS: "60000",
+    DAILY_TURNS_PER_IP: "60",
     TURNSTILE_SECRET: o.secret === null ? undefined : (o.secret ?? TURNSTILE_TEST_SECRET),
+    IP_HASH_KEY: o.ipHashKey === null ? undefined : (o.ipHashKey ?? "test-key"),
     RL_SESSION: {
       async limit({ key }: { key: string }) {
         keys.push(key);
@@ -184,6 +195,14 @@ describe("POST /assistant/session", () => {
     expect(h.inits).toEqual([]);
   });
 
+  it("refuses everyone with 503 not_configured when IP_HASH_KEY is missing, before asking Turnstile", async () => {
+    const h = setup({ ipHashKey: null });
+    const forms = fakeSiteverify({ success: true });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "not_configured" } });
+    expect(forms).toEqual([]);
+    expect(h.inits).toEqual([]);
+  });
+
   it("refuses a token Turnstile rejects with 403, minting nothing", async () => {
     const h = setup();
     const forms = fakeSiteverify({ success: false, "error-codes": ["invalid-input-response"] });
@@ -224,13 +243,33 @@ describe("POST /assistant/session", () => {
     expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe(true);
   });
 
-  it("says resting when the ledger cannot be read (fails closed), and logs why", async () => {
+  it("says resting, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
     const h = setup({ db: brokenDb() });
     fakeSiteverify({ success: true });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await json(await call(sessionRequest(), h.env));
-    expect(res).toMatchObject({ status: 200, body: { resting: true } });
+    expect(res).toMatchObject({ status: 200, body: { resting: true, mode: "text" } });
     expect(error).toHaveBeenCalledWith("ledger failed: D1 unavailable");
+  });
+
+  it("reports mode text instead of voice while voice is resting today", async () => {
+    for (const [unit, n] of [
+      ["voice_seconds", 1786],
+      ["tts_chars", 59_501],
+    ] as const) {
+      const db = sqliteD1();
+      await spend(db, unit, n, n, utcDay(Date.now()));
+      const h = setup({ db });
+      fakeSiteverify({ success: true });
+      expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: false });
+    }
+  });
+
+  it("keeps mode text and off as they are", async () => {
+    const db = sqliteD1();
+    await spend(db, "voice_seconds", 1800, 1800, utcDay(Date.now()));
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), setup({ db, mode: "text" }).env))).body.mode).toBe("text");
   });
 });
 
@@ -310,7 +349,7 @@ describe("scheduled", () => {
     expect(JSON.stringify(error.mock.calls)).not.toContain("Magenta");
   });
 
-  it("deletes turn log rows after 30 days and daily counts after 7, and logs how many", async () => {
+  it("deletes turn log rows after 30 days, daily counts after 7 and visitor counts once their day is over", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     const db = sqliteD1();
@@ -319,10 +358,13 @@ describe("scheduled", () => {
     await recordTurn(db, { ...RECORD, turnId: "recent" }, now - 29 * DAY);
     await spend(db, "turns", 1, 1, utcDay(now - 8 * DAY));
     await spend(db, "turns", 1, 1, utcDay(now));
+    await spendVisitor(db, "a".repeat(64), 60, utcDay(now - DAY));
+    await spendVisitor(db, "b".repeat(64), 60, utcDay(now));
     await run(setup({ db, answer: [] }).env);
     expect(db.sqlite.prepare("SELECT turn_id FROM turns").all()).toEqual([{ turn_id: "recent" }]);
     expect(db.sqlite.prepare("SELECT day FROM daily").all()).toEqual([{ day: utcDay(now) }]);
-    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns and 1 daily counts");
+    expect(db.sqlite.prepare("SELECT day FROM daily_ip").all()).toEqual([{ day: utcDay(now) }]);
+    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns, 1 daily counts and 1 visitor counts");
   });
 
   it("logs a retention failure without stopping the canary", async () => {

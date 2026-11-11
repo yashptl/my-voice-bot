@@ -23,12 +23,25 @@
   "ratelimits": [
     { "name": "RL_SESSION", "namespace_id": "2001", "simple": { "limit": 10, "period": 60 } }
   ],
+  // Secrets, set with `wrangler secret put` (locally in .dev.vars): TURNSTILE_SECRET and IP_HASH_KEY
+  // (without either, /assistant/session answers 503), MINIMAX_API_KEY (optional: the demo without it).
   "vars": {
-    "ASSISTANT_MODE": "voice",
+    // Text first. Voice is switched on in Phase 3, once its daily ceilings below are confirmed
+    // against the Workers AI and MiniMax dashboards.
+    "ASSISTANT_MODE": "text",
     "LLM_PROFILE": "minimax-flash",
     "TTS_VOICE": "English_FriendlyPerson",
-    // Model turns per UTC day, for everyone together. Past it, the assistant rests until midnight UTC.
-    "DAILY_TURNS": "400"
+    // Daily ceilings per UTC day, as whole numbers. A missing one uses the same default in code; one
+    // set to anything else counts as 0 (paused) and logs an error. "0" pauses on purpose.
+    // Model turns, for everyone together. Past it, the assistant rests until midnight UTC.
+    "DAILY_TURNS": "400",
+    // Mic seconds sent to Flux, for everyone together, reserved 15 s at a time. Past it, or past
+    // DAILY_TTS_CHARS, voice rests until midnight UTC and the assistant carries on in text.
+    "DAILY_VOICE_SECONDS": "1800",
+    // Characters sent to MiniMax speech, for everyone together, reserved 500 (one reply) at a time.
+    "DAILY_TTS_CHARS": "60000",
+    // Model turns per visitor (client IP), text and voice together, so one visitor can't use up the day.
+    "DAILY_TURNS_PER_IP": "60"
   },
   "observability": { "enabled": true }
 }

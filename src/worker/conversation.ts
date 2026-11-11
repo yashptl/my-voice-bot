@@ -11,11 +11,12 @@ import { WS_SUBPROTOCOL } from "../protocol/version";
 import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
-import { spendTurn } from "./ledger";
+import { AUDIO_BLOCK_SECONDS, release, reserve, spendTurn, voiceUnitResting } from "./ledger";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
-import { VOICE_IDLE_CLOSE_MS, VoiceLoop } from "./voice-loop";
+import { clientIp } from "./visitor";
+import { VOICE_IDLE_CLOSE_MS, VOICE_RESTING_MESSAGE, VoiceLoop } from "./voice-loop";
 
 /** Client JSON messages are tiny; anything bigger is refused without parsing. */
 const MAX_TEXT_FRAME = 4096;
@@ -73,11 +74,12 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array | n
 /**
  * One conversation. Holds the token's secret hash, expiry and source (from `init`) and the
  * ConversationState (meter, turn count, history) that voice sockets and text answers share. Voice:
- * one socket at a time, a new one replaces the old; turn logic lives in VoiceLoop. Text:
- * `POST /assistant/chat` streams one answer at a time as server-sent events (textTurn). Every
- * answer first spends one of the day's shared turns (ledger.ts), and once it ends its TurnRecord
- * goes to the turn log in D1 (turn-log.ts). A storage alarm deletes everything RETENTION_MS after
- * the session expires.
+ * one socket at a time, a new one replaces the old; turn logic lives in VoiceLoop, and the socket
+ * closes when the session expires. Text: `POST /assistant/chat` streams one answer at a time as
+ * server-sent events (textTurn). Every answer first spends one of the visitor's and one of the
+ * day's shared turns (ledger.ts), the visitor being the client IP of the request (for voice, of the
+ * upgrade); once it ends its TurnRecord goes to the turn log in D1 (turn-log.ts). A storage alarm
+ * deletes everything RETENTION_MS after the session expires.
  */
 export class Conversation extends DurableObject<Env> {
   private state: Promise<ConversationState> | null = null;
@@ -106,17 +108,21 @@ export class Conversation extends DurableObject<Env> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     }
-    const conversationId = await this.authorize(tokenFromProtocols(request.headers.get("Sec-WebSocket-Protocol")));
-    if (!conversationId) return new Response("Unauthorized", { status: 401 });
+    const session = await this.authorize(tokenFromProtocols(request.headers.get("Sec-WebSocket-Protocol")));
+    if (!session) return new Response("Unauthorized", { status: 401 });
 
+    const { conversationId, expiresAt } = session;
     const log = logFor(conversationId);
+    const ip = clientIp(request);
     const providers = buildProviders(this.env);
     const state = await this.loadState(log);
+    const audio = await this.reserveFirstAudio(log);
     const pair = new WebSocketPair();
     const client = pair[0];
     const socket = pair[1];
     socket.binaryType = "arraybuffer";
     socket.accept();
+    const upgraded = new Response(null, { status: 101, webSocket: client, headers: { "Sec-WebSocket-Protocol": WS_SUBPROTOCOL } });
 
     const send = (e: ServerEvent | ArrayBuffer) => {
       try {
@@ -125,6 +131,12 @@ export class Conversation extends DurableObject<Env> {
         // The socket is closing; its close event cleans up.
       }
     };
+    if (!audio) {
+      // Voice rests for the day. Accepted first and told why: a browser hides a refused upgrade's status.
+      send({ type: "error", code: "voice_resting", message: VOICE_RESTING_MESSAGE });
+      closeQuietly(socket, 1008, "voice resting");
+      return upgraded;
+    }
     const loop = new VoiceLoop({
       conversationId,
       stt: providers.stt,
@@ -135,7 +147,13 @@ export class Conversation extends DurableObject<Env> {
       send,
       now: () => Date.now(),
       state,
-      spendTurn: () => spendTurn(this.env, log),
+      ledger: {
+        spendTurn: () => spendTurn(this.env, ip, log),
+        reserve: (unit, n) => reserve(this.env, unit, n, log),
+        release: (unit, n, day) => void release(this.env, unit, n, day, log),
+      },
+      audioReserved: audio,
+      expiresAt,
       closeSocket: (code, reason) => closeQuietly(socket, code, reason),
       idleCloseMs: VOICE_IDLE_CLOSE_MS,
       log,
@@ -170,18 +188,37 @@ export class Conversation extends DurableObject<Env> {
       closeQuietly(socket, 1011, "start failed");
     });
 
-    return new Response(null, { status: 101, webSocket: client, headers: { "Sec-WebSocket-Protocol": WS_SUBPROTOCOL } });
+    return upgraded;
+  }
+
+  /**
+   * The socket's first block of the day's mic audio, reserved before it is accepted. Null when voice
+   * rests for the day: no block left, or not one reply's speech (or the database fails: fails closed).
+   */
+  private async reserveFirstAudio(log: Log): Promise<{ day: string; seconds: number } | null> {
+    const [day, speechResting] = await Promise.all([
+      reserve(this.env, "voice_seconds", AUDIO_BLOCK_SECONDS, log),
+      voiceUnitResting(this.env, "tts_chars", log),
+    ]);
+    if (day === null) return null;
+    if (!speechResting) return { day, seconds: AUDIO_BLOCK_SECONDS };
+    await release(this.env, "voice_seconds", AUDIO_BLOCK_SECONDS, day, log);
+    return null;
   }
 
   /**
    * One text answer, streamed as server-sent events. Checks in order: token (401), body (400), an
-   * answer already streaming (409), the conversation's turns (429), the day's shared turns (503).
+   * answer already streaming (409), the conversation's turns (429 `limit`), then the visitor's turns
+   * today (429 `limit`) and everyone's (503 `resting`). The conversation's turn is counted first,
+   * with no await between check and count, so a voice turn on the same conversation cannot take the
+   * last one too; a refused spend gives it back.
    * The answer stops, and stops costing, when the visitor aborts the request or the response
    * stream is cancelled; history then keeps only the sentences already sent.
    */
   private async chat(request: Request): Promise<Response> {
-    const conversationId = await this.authorize(tokenFromAuthorization(request.headers.get("Authorization")));
-    if (!conversationId) return json({ error: "auth" }, 401);
+    const session = await this.authorize(tokenFromAuthorization(request.headers.get("Authorization")));
+    if (!session) return json({ error: "auth" }, 401);
+    const { conversationId } = session;
     const body = await readJson(request, ChatRequestSchema);
     if (!body || !sanitizeInput(body.message).trim()) return json({ error: "bad_request" }, 400);
     // Set before the next await, so a double send cannot slip in while this one is checked.
@@ -194,7 +231,11 @@ export class Conversation extends DurableObject<Env> {
       const hash = await (this.hash ??= promptHash(buildStable(bundle)));
       const state = await this.loadState(log);
       if (!state.startTurn()) return json({ error: "limit" }, 429);
-      if (!(await spendTurn(this.env, log))) return json({ error: "resting" }, 503);
+      const spent = await spendTurn(this.env, clientIp(request), log);
+      if (spent !== "ok") {
+        state.undoTurn();
+        return spent === "limit" ? json({ error: "limit" }, 429) : json({ error: "resting" }, 503);
+      }
 
       const stop = new AbortController();
       const events = textTurn({
@@ -263,15 +304,15 @@ export class Conversation extends DurableObject<Env> {
     });
   }
 
-  /** The conversation id when the token's secret matches and the session has not expired. */
-  private async authorize(token: string | null): Promise<string | null> {
+  /** The conversation id and session expiry when the token's secret matches and the session has not expired. */
+  private async authorize(token: string | null): Promise<{ conversationId: string; expiresAt: number } | null> {
     const parsed = parseToken(token ?? "");
     if (!parsed) return null;
     const stored = await this.ctx.storage.get(["secretHash", "expiresAt"]);
     const secretHash = stored.get("secretHash");
     const expiresAt = stored.get("expiresAt");
     if (typeof secretHash !== "string" || typeof expiresAt !== "number" || Date.now() >= expiresAt) return null;
-    return (await verifySecret(parsed.secret, secretHash)) ? parsed.conversationId : null;
+    return (await verifySecret(parsed.secret, secretHash)) ? { conversationId: parsed.conversationId, expiresAt } : null;
   }
 
   /** Loaded once per object and shared by every socket; a failed load is retried by the next socket. */

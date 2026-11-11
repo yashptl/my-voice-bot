@@ -6,3 +6,10 @@ ANTHROPIC_API_KEY=
 # Turnstile: Cloudflare's published always-pass TEST secret, not a real one. It accepts only the
 # test token XXXX.DUMMY.TOKEN.XXXX, which the playground's test site key produces.
 TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+# Keys the per-visitor daily count (an HMAC of the day and client IP), so D1 never holds a raw IP.
+# This value is a public placeholder for local dev and tests only; production sets a long random
+# Worker secret (`openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`). Without it,
+# /assistant/session answers 503 and every answer fails closed.
+IP_HASH_KEY=local-test-only-not-a-secret
+# Voice is off by default (wrangler.jsonc). To try it locally, uncomment this line.
+# ASSISTANT_MODE=voice
