@@ -6,5 +6,5 @@
     "types": ["vite/client"]
   },
   "include": ["src/protocol", "src/client", "playground"],
-  "exclude": ["**/*.test.ts"]
+  "exclude": ["src/protocol/**/*.test.ts"]
 }

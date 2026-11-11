@@ -188,3 +188,48 @@ describe("GATE_FALLBACK", () => {
     expect(gateSentence("</meta> Yash builds agents.", "").text).toBe("Yash builds agents.");
   });
 });
+
+describe("gateSentence: product names and split numbers", () => {
+  it.each([
+    "Yash built the chat with Socket.io.",
+    "Yash wrote services in ASP.NET for years.",
+    "Yash used socket.io and asp.net together.",
+  ])("passes the product name in %j", (text) => {
+    expect(pass(text).blocked).toEqual([]);
+  });
+
+  it("still blocks a link that sits next to a product name", () => {
+    expect(pass("Yash used Socket.io, see yashos.dev.").blocked).toContain("url");
+    expect(pass("Try mysocket.io today.").blocked).toContain("url");
+  });
+
+  it("blocks a phone number that was split into fragments once it is joined", () => {
+    expect(pass("Call 416. 555. 1234 now.").blocked).toContain("phone");
+  });
+});
+
+describe("gateSentence: normalization", () => {
+  it.each([
+    ["phone", "Call 416\u200b555\u200b1234 now."],
+    ["url", "Visit evil\u200b.com today."],
+    ["phone", "Call \uff14\uff11\uff16 \uff15\uff15\uff15 \uff11\uff12\uff13\uff14 now."],
+    ["url", "\uff45\uff56\uff49\uff4c\uff0e\uff43\uff4f\uff4d"],
+    ["url", "Visit evil\u{E0041}.com today."],
+  ])("%s: blocks %j", (reason, text) => {
+    expect(pass(text).blocked).toContain(reason);
+  });
+
+  it("returns the normalized text, which is what is shown", () => {
+    expect(pass("Yash\u200b works\uff01").text).toBe("Yash works!");
+  });
+});
+
+describe("gateSentence: product names", () => {
+  it.each(["Try evil-socket.io today.", "Try x.socket.io today.", "Try my-asp.net today."])("blocks %j", (text) => {
+    expect(pass(text).blocked).toContain("url");
+  });
+
+  it.each(["Yash uses Socket.io daily.", "Yash writes ASP.NET services."])("passes %j", (text) => {
+    expect(pass(text).blocked).toEqual([]);
+  });
+});

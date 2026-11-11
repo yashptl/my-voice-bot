@@ -3,6 +3,7 @@ import { createFakeLlm } from "../adapters/fake-llm";
 import { createFakeStt } from "../adapters/fake-stt";
 import { createFakeTts } from "../adapters/fake-tts";
 import { buildStable, promptHash } from "../core/prompt";
+import { PRESSED_ANSWER } from "../core/rules";
 import type { Bundle } from "../knowledge/types";
 import { LlmError, type LlmPort } from "../ports/llm";
 import type { TtsPort } from "../ports/tts";
@@ -10,7 +11,9 @@ import { decodeAudioFrame, VOICE_FORMAT } from "../protocol/audio";
 import type { ServerEvent } from "../protocol/events";
 import type { TurnRecord } from "../protocol/turn-record";
 import { ConversationState } from "./conversation-state";
-import { VoiceLoop } from "./voice-loop";
+import type { Gap } from "./gap-log";
+import type { TurnSpend, VoiceUnit } from "./ledger";
+import { VoiceLoop, type VoiceLedger } from "./voice-loop";
 
 const bundle: Bundle = {
   version: "0123456789ab",
@@ -42,7 +45,9 @@ function setup(
     tts?: TtsPort;
     maxSeconds?: number;
     prices?: { input: number; cachedInput: number; output: number } | null;
-    spendTurn?: () => Promise<boolean>;
+    ledger?: VoiceLedger;
+    audioReserved?: { day: string; seconds: number };
+    expiresAt?: number;
     idleCloseMs?: number;
   } = {},
 ) {
@@ -51,6 +56,7 @@ function setup(
   const signals: AbortSignal[] = [];
   const closes: { code: number; reason: string }[] = [];
   const logged: TurnRecord[] = [];
+  const gaps: Gap[] = [];
   const stt = createFakeStt();
   const llm =
     o.llm ??
@@ -98,16 +104,52 @@ function setup(
     now: () => Date.now(),
     state,
     prices: o.prices,
-    spendTurn: o.spendTurn,
+    ledger: o.ledger,
+    audioReserved: o.audioReserved,
+    expiresAt: o.expiresAt,
     idleCloseMs: o.idleCloseMs,
     closeSocket: (code, reason) => void closes.push({ code, reason }),
     log: (level, line) => void logs.push(`${level}: ${line}`),
     onRecord: (r) => void logged.push(structuredClone(r)),
+    onGap: (g) => void gaps.push(structuredClone(g)),
   });
-  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged };
+  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged, gaps };
 }
 
 type H = ReturnType<typeof setup>;
+
+const DAY = "2026-11-08";
+
+/**
+ * The day's ceilings as the loop sees them: every call is recorded, and answers "ok" (spends) or
+ * DAY (reservations) unless the test passes its own answer.
+ */
+function fakeLedger(
+  o: { spendTurn?: () => Promise<TurnSpend>; reserve?: (unit: VoiceUnit, n: number) => Promise<string | null> } = {},
+) {
+  const calls: string[] = [];
+  const released: [VoiceUnit, number, string][] = [];
+  const ledger: VoiceLedger = {
+    spendTurn: () => (calls.push("spendTurn"), o.spendTurn?.() ?? Promise.resolve("ok")),
+    reserve: (unit, n) => (calls.push(`reserve ${unit} ${n}`), o.reserve?.(unit, n) ?? Promise.resolve(DAY)),
+    release: (unit, n, day) => void released.push([unit, n, day]),
+  };
+  return { ledger, calls, released };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+/** Sends `n` mic frames 80 ms apart, as the browser does. */
+async function talk(h: H, n: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    h.loop.onAudio(new ArrayBuffer(2560));
+    await vi.advanceTimersByTimeAsync(80);
+  }
+}
 
 const kinds = (out: Out[]) =>
   out.map((e) => {
@@ -881,14 +923,30 @@ describe("VoiceLoop onRecord (the turn log)", () => {
     expect(h.logged).toHaveLength(1);
   });
 
+  it("keeps the question and the sentences already sent in history when the socket closes mid-answer, as text does", async () => {
+    const h = setup({ tokenMs: 50 });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await until(() => kinds(h.out).includes("sentence:0"));
+    h.loop.close();
+    await vi.runAllTimersAsync();
+    const sent = of(h.out, "sentence").map((e) => e.text);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(h.loop.history).toEqual([
+      { role: "user", text: QUESTION },
+      { role: "assistant", text: sent.join(" ") },
+    ]);
+  });
+
   it("gets nothing for a turn interrupted while its spend was pending (no model call)", async () => {
-    const spends: ((ok: boolean) => void)[] = [];
-    const h = setup({ spendTurn: () => new Promise<boolean>((resolve) => void spends.push(resolve)) });
+    const spends: ((spent: TurnSpend) => void)[] = [];
+    const { ledger } = fakeLedger({ spendTurn: () => new Promise<TurnSpend>((resolve) => void spends.push(resolve)) });
+    const h = setup({ ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     const first = of(h.out, "turn.start")[0]?.turnId ?? "";
     h.loop.onMessage({ type: "interrupt", turnId: first, lastHeardSentenceId: null });
-    spends[0]?.(true);
+    spends[0]?.("ok");
     await vi.runAllTimersAsync();
     expect(h.signals).toEqual([]); // the model was never called
     expect(records(h.out)).toMatchObject([{ turnId: first, interrupted: true }]); // the client still gets turn.end
@@ -898,8 +956,8 @@ describe("VoiceLoop onRecord (the turn log)", () => {
     await ask(h, "And at Amazon?", 1);
     await ask(h, "And before that?", 2);
     const [, second, third] = of(h.out, "turn.start").map((t) => t.turnId);
-    spends[1]?.(true);
-    spends[2]?.(true);
+    spends[1]?.("ok");
+    spends[2]?.("ok");
     await vi.runAllTimersAsync();
     expect(h.signals).toHaveLength(1);
     expect(records(h.out).map((r) => r.turnId)).toEqual([first, second, third]);
@@ -907,7 +965,7 @@ describe("VoiceLoop onRecord (the turn log)", () => {
   });
 
   it("gets nothing for a turn the day's ceiling refused (no model call)", async () => {
-    const h = setup({ spendTurn: async () => false });
+    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "resting" }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
@@ -998,19 +1056,19 @@ describe("VoiceLoop parity with text", () => {
   });
 
   it("spends one of the day's turns before each answer", async () => {
-    let spent = 0;
-    const h = setup({ spendTurn: async () => (spent++, true) });
+    const l = fakeLedger();
+    const h = setup({ ledger: l.ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
     await ask(h, "And before that?", 1);
     await vi.runAllTimersAsync();
-    expect(spent).toBe(2);
+    expect(l.calls.filter((c) => c === "spendTurn")).toHaveLength(2);
     expect(records(h.out)).toHaveLength(2);
   });
 
   it("when the day's turns are spent: a resting error, no LLM call, and the conversation ends", async () => {
-    const h = setup({ spendTurn: async () => false });
+    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "resting" }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
@@ -1023,8 +1081,8 @@ describe("VoiceLoop parity with text", () => {
     expect(h.ttsCalls).toContain("cancel");
   });
 
-  it("treats a failing spend as spent (fails closed)", async () => {
-    const h = setup({ spendTurn: async () => Promise.reject(new Error("ledger down")) });
+  it("treats a failing spend as refused (fails closed)", async () => {
+    const h = setup({ ledger: fakeLedger({ spendTurn: async () => Promise.reject(new Error("ledger down")) }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
@@ -1063,5 +1121,325 @@ describe("VoiceLoop idle close", () => {
     await h.loop.start();
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(h.closes).toEqual([]);
+  });
+});
+
+describe("VoiceLoop spends (turn order)", () => {
+  it("counts the conversation's turn at once, then spends the turn and reserves its speech concurrently", async () => {
+    const spend = deferred<TurnSpend>();
+    const speech = deferred<string | null>();
+    const l = fakeLedger({ spendTurn: () => spend.promise, reserve: () => speech.promise });
+    const h = setup({ ledger: l.ledger });
+    await h.loop.start();
+    h.stt.emit({ type: "end", transcript: QUESTION, turnIndex: 0 });
+    expect(h.state.turnsStarted).toBe(1); // counted before any await, so a text turn cannot take it too
+    await vi.advanceTimersByTimeAsync(0);
+    expect(l.calls).toEqual(["spendTurn", "reserve tts_chars 500"]); // both asked before either answered
+    expect(h.signals).toEqual([]);
+    spend.resolve("ok");
+    speech.resolve(DAY);
+    await vi.runAllTimersAsync();
+    expect(h.signals).toHaveLength(1);
+    expect(records(h.out)).toHaveLength(1);
+  });
+
+  for (const [spent, code, reason] of [
+    ["limit", "limit", "visitor limit"],
+    ["resting", "resting", "resting"],
+  ] as const) {
+    it(`refused as ${spent}: a ${code} error, no model call, the turn undone and its speech given back`, async () => {
+      const l = fakeLedger({ spendTurn: async () => spent });
+      const h = setup({ ledger: l.ledger });
+      await h.loop.start();
+      await ask(h, QUESTION);
+      await vi.runAllTimersAsync();
+      expect(h.signals).toEqual([]);
+      expect(of(h.out, "error")).toEqual([{ type: "error", code, message: expect.any(String) }]);
+      expect(of(h.out, "turn.end")).toEqual([]);
+      expect(h.state.turnsStarted).toBe(0);
+      expect(l.released).toEqual([["tts_chars", 500, DAY]]);
+      expect(h.closes).toEqual([{ code: 1008, reason }]);
+      expect(h.loop.history).toEqual([]);
+      expect(h.logged).toEqual([]);
+    });
+  }
+
+  it("gives back the whole speech reservation of a turn interrupted while it was being spent", async () => {
+    const spend = deferred<TurnSpend>();
+    const l = fakeLedger({ spendTurn: () => spend.promise });
+    const h = setup({ ledger: l.ledger });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    const turnId = of(h.out, "turn.start")[0]?.turnId ?? "";
+    h.loop.onMessage({ type: "interrupt", turnId, lastHeardSentenceId: null });
+    spend.resolve("ok");
+    await vi.runAllTimersAsync();
+    expect(h.signals).toEqual([]);
+    expect(l.released).toEqual([["tts_chars", 500, DAY]]);
+  });
+});
+
+describe("VoiceLoop spoken characters", () => {
+  // No commas: the splitter may cut a long first sentence at one, for a faster first caption.
+  const LONG = [1, 2, 3, 4, 5].map((n) => `Yash shipped feature number ${n} for the field sales teams at Magenta Connect and it is still in daily use.`);
+  const TAIL = "Want more?";
+  const length = LONG[0]?.length ?? 0;
+
+  it("speaks a reply only up to 500 characters; the rest is captioned with spoken false and never reaches TTS", async () => {
+    expect([4 * length <= 500, 5 * length > 500]).toEqual([true, true]);
+    const l = fakeLedger();
+    const h = setup({ reply: `${[...LONG, TAIL].join(" ")}\n${META}`, ledger: l.ledger });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    const turnId = of(h.out, "turn.start")[0]?.turnId;
+    expect(of(h.out, "sentence")).toEqual([
+      ...LONG.slice(0, 4).map((text, id) => ({ type: "sentence", turnId, id, text })),
+      { type: "sentence", turnId, id: 4, text: LONG[4], spoken: false },
+      // Short enough to fit, but speech stops at the first sentence that does not: no gap in what is heard.
+      { type: "sentence", turnId, id: 5, text: TAIL, spoken: false },
+    ]);
+    expect(h.ttsCalls.filter((c) => c.startsWith("speak"))).toEqual(["speak 0", "speak 1", "speak 2", "speak 3"]);
+    expect(new Set(of(h.out, "audio").map((a) => a.sentenceId))).toEqual(new Set([0, 1, 2, 3]));
+    expect(records(h.out)[0]?.ttsChars).toBe(4 * length);
+    expect(l.released).toEqual([["tts_chars", 500 - 4 * length, DAY]]);
+    expect(h.loop.history[1]?.text).toBe([...LONG, TAIL].join(" "));
+  });
+
+  it("caps each reply at 500 spoken characters without a ledger too", async () => {
+    const h = setup({ reply: `${LONG.join(" ")}\n${META}` });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(records(h.out)[0]?.ttsChars).toBe(4 * length);
+  });
+
+  it("when the day's characters are refused: the whole reply is captioned unspoken, then voice_resting and close 1008", async () => {
+    const l = fakeLedger({ reserve: async () => null });
+    const h = setup({ ledger: l.ledger });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(of(h.out, "sentence").map((e) => e.spoken)).toEqual([false, false, false]);
+    expect(h.ttsCalls.filter((c) => c.startsWith("speak"))).toEqual([]);
+    expect(of(h.out, "audio")).toEqual([]);
+    expect(kinds(h.out).slice(-2)).toEqual(["turn.end", "error:voice_resting"]);
+    expect(records(h.out)[0]).toMatchObject({ ttsChars: 0, error: null });
+    expect(h.closes).toEqual([{ code: 1008, reason: "voice resting" }]);
+    expect(h.loop.history[1]?.text).toBe(PROSE);
+    expect(l.released).toEqual([]);
+  });
+
+  it("gives back what an interrupted reply did not speak", async () => {
+    const l = fakeLedger();
+    const h = setup({ tokenMs: 50, ledger: l.ledger });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await until(() => kinds(h.out).includes("sentence:0"));
+    const turnId = of(h.out, "turn.start")[0]?.turnId ?? "";
+    h.loop.onMessage({ type: "interrupt", turnId, lastHeardSentenceId: 0 });
+    await vi.runAllTimersAsync();
+    expect(l.released).toEqual([["tts_chars", 500 - (records(h.out)[0]?.ttsChars ?? 0), DAY]]);
+  });
+});
+
+describe("VoiceLoop audio reservation", () => {
+  it("reserves the next 15 s block in the background once less than 5 s is left, so audio never waits on it", async () => {
+    const block = deferred<string | null>();
+    const l = fakeLedger({ reserve: () => block.promise });
+    const h = setup({ ledger: l.ledger, audioReserved: { day: DAY, seconds: 15 } });
+    await h.loop.start();
+    await talk(h, 125); // 10 s: 5 s of the reservation left
+    expect(l.calls).toEqual([]);
+    await talk(h, 1); // less than 5 s left
+    expect(l.calls).toEqual(["reserve voice_seconds 15"]);
+    await talk(h, 61); // 14.96 s while the block is on its way: every frame goes through, one request only
+    expect(h.stt.frames).toHaveLength(187);
+    expect(l.calls).toHaveLength(1);
+    block.resolve(DAY);
+    await vi.advanceTimersByTimeAsync(0);
+    await talk(h, 100); // 22.96 s, inside the second block, with more than 5 s of it left
+    expect(h.stt.frames).toHaveLength(287);
+    expect(l.calls).toHaveLength(1);
+    await talk(h, 26); // 25.04 s: less than 5 s left again
+    expect(l.calls).toEqual(["reserve voice_seconds 15", "reserve voice_seconds 15"]);
+  });
+
+  it("drops audio past the reservation while the next block is still on its way, and counts it", async () => {
+    const l = fakeLedger({ reserve: (unit) => (unit === "voice_seconds" ? new Promise<string | null>(() => {}) : Promise.resolve(DAY)) });
+    const h = setup({ ledger: l.ledger, audioReserved: { day: DAY, seconds: 15 } });
+    await h.loop.start();
+    await talk(h, 190);
+    expect(h.stt.frames).toHaveLength(187); // 14.96 s; the next frame would pass 15 s
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(records(h.out)[0]?.droppedFrames).toBe(3);
+  });
+
+  it("when the next block is refused and no answer is running: voice_resting and close 1008 at once", async () => {
+    const l = fakeLedger({ reserve: async () => null });
+    const h = setup({ ledger: l.ledger, audioReserved: { day: DAY, seconds: 15 } });
+    await h.loop.start();
+    await talk(h, 126);
+    expect(of(h.out, "error")).toEqual([{ type: "error", code: "voice_resting", message: expect.any(String) }]);
+    expect(h.closes).toEqual([{ code: 1008, reason: "voice resting" }]);
+    expect(l.released).toEqual([["voice_seconds", 4, DAY]]); // 15 - 10.08 s, whole seconds only
+  });
+
+  it("when the next block is refused during an answer: the answer finishes, then voice_resting and close 1008", async () => {
+    const l = fakeLedger({ reserve: async (unit) => (unit === "voice_seconds" ? null : DAY) });
+    const h = setup({ tokenMs: 20, ledger: l.ledger, audioReserved: { day: DAY, seconds: 5 } });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    h.loop.onAudio(new ArrayBuffer(2560)); // less than 5 s left: the block is asked for, and refused
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.closes).toEqual([]);
+    await vi.runAllTimersAsync();
+    expect(kinds(h.out).slice(-2)).toEqual(["turn.end", "error:voice_resting"]);
+    expect(records(h.out)[0]?.error).toBeNull();
+    expect(h.closes).toEqual([{ code: 1008, reason: "voice resting" }]);
+  });
+
+  it("gives back the unused reservation on close, to the day each block came from", async () => {
+    const l = fakeLedger({ reserve: async () => "2026-11-09" }); // the second block lands after midnight
+    const h = setup({ ledger: l.ledger, audioReserved: { day: DAY, seconds: 15 } });
+    await h.loop.start();
+    await talk(h, 136); // 10.88 s of 30
+    h.loop.close();
+    expect(l.released).toEqual([
+      ["voice_seconds", 15, "2026-11-09"],
+      ["voice_seconds", 4, DAY],
+    ]);
+    h.loop.close();
+    expect(l.released).toHaveLength(2);
+  });
+
+  it("gives back a block that lands after the socket closed", async () => {
+    const block = deferred<string | null>();
+    const l = fakeLedger({ reserve: () => block.promise });
+    const h = setup({ ledger: l.ledger, audioReserved: { day: DAY, seconds: 5 } });
+    await h.loop.start();
+    await talk(h, 1);
+    h.loop.close();
+    block.resolve(DAY);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(l.released).toEqual([
+      ["voice_seconds", 4, DAY],
+      ["voice_seconds", 15, DAY],
+    ]);
+  });
+});
+
+describe("VoiceLoop socket lifetime", () => {
+  it("closes the socket when the session expires, even mid-answer", async () => {
+    const h = setup({ tokenMs: 50, expiresAt: Date.now() + 60_000 });
+    await h.loop.start();
+    await vi.advanceTimersByTimeAsync(59_900);
+    await ask(h, QUESTION);
+    expect(h.closes).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.closes).toEqual([{ code: 1000, reason: "session expired" }]);
+    expect(h.signals[0]?.aborted).toBe(true);
+  });
+
+  it("refuses a binary frame that is empty or not whole 80 ms frames as protocol, and never sends it to STT", async () => {
+    const h = setup();
+    await h.loop.start();
+    for (const bytes of [0, 1, 2559, 2561, 5119]) h.loop.onAudio(new ArrayBuffer(bytes));
+    h.loop.onAudio(new ArrayBuffer(5120)); // two whole frames
+    expect(h.stt.frames.map((f) => f.byteLength)).toEqual([5120]);
+    expect(of(h.out, "error").map((e) => e.code)).toEqual(["protocol", "protocol", "protocol", "protocol", "protocol"]);
+    expect(h.closes).toEqual([]);
+  });
+
+  it("is not kept open by empty frames, odd frames, or marks and interrupts for turns that are not its own", async () => {
+    const h = setup({ idleCloseMs: 120_000 });
+    await h.loop.start();
+    for (let s = 0; s < 130 && h.closes.length === 0; s += 10) {
+      h.loop.onAudio(new ArrayBuffer(0));
+      h.loop.onAudio(new ArrayBuffer(100));
+      h.loop.onMessage({ type: "mark", turnId: "made-up", mark: "clientFirstAudioPlayed", at: 1 });
+      h.loop.onMessage({ type: "interrupt", turnId: "made-up", lastHeardSentenceId: null });
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(h.closes).toEqual([{ code: 1000, reason: "idle" }]);
+    expect(h.stt.frames).toEqual([]);
+  });
+
+  it("counts marks and interrupts for the current or last turn as activity", async () => {
+    const h = setup({ idleCloseMs: 120_000 });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const turnId = of(h.out, "turn.start")[0]?.turnId ?? "";
+    for (let s = 0; s < 300; s += 60) {
+      h.loop.onMessage({ type: "mark", turnId, mark: "clientFirstAudioPlayed", at: 1 });
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(h.closes).toEqual([]);
+    await vi.advanceTimersByTimeAsync(121_000);
+    expect(h.closes).toEqual([{ code: 1000, reason: "idle" }]);
+  });
+});
+
+describe("VoiceLoop robustness", () => {
+  it("ends a turn whose run throws: internal error, the record with its error, listening again, and the idle close still fires", async () => {
+    const inner = createFakeTts();
+    const tts: TtsPort = {
+      id: inner.id,
+      format: inner.format,
+      async open(cb) {
+        const s = await inner.open(cb);
+        return {
+          speak: (id, text) => s.speak(id, text),
+          finish: () => {
+            throw new Error("finish exploded");
+          },
+          cancel: () => s.cancel(),
+        };
+      },
+    };
+    const h = setup({ tts, idleCloseMs: 120_000 });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(kinds(h.out).slice(-3)).toEqual(["error:internal", "turn.end", "state:listening"]);
+    expect(records(h.out)[0]).toMatchObject({ error: "internal", interrupted: false });
+    expect(h.logged).toEqual(records(h.out));
+    expect(h.logs).toContain("error: turn failed: finish exploded");
+    expect(h.loop.history[1]?.text).toBe(PROSE);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(h.closes).toEqual([{ code: 1000, reason: "idle" }]);
+  });
+});
+
+describe("VoiceLoop onGap (the gap log)", () => {
+  it("is not called when the knowledge answered directly", async () => {
+    const h = setup();
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(h.gaps).toEqual([]);
+  });
+
+  it("gets the final transcript and refs of an adjacent answer", async () => {
+    const h = setup({ reply: `${S0}\n<meta>{"refs":["role:magenta"],"coverage":"adjacent"}</meta>` });
+    await h.loop.start();
+    await ask(h, "Does Yash know Rust?");
+    await vi.runAllTimersAsync();
+    expect(h.gaps).toEqual([{ mode: "voice", coverage: "adjacent", refs: ["role:magenta"], question: "Does Yash know Rust?" }]);
+  });
+
+  it("gets a pressed answer whose data line the rules filled in, and nothing when the data line is missing", async () => {
+    const pressed = setup({ reply: PRESSED_ANSWER });
+    await pressed.loop.start();
+    await ask(pressed, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(pressed.gaps).toEqual([{ mode: "voice", coverage: "none", refs: [], question: QUESTION }]);
+    const missing = setup({ reply: `${S0} ${S1}` });
+    await missing.loop.start();
+    await ask(missing, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(missing.gaps).toEqual([]);
   });
 });

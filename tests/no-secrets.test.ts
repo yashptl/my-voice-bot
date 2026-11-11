@@ -8,8 +8,12 @@ import { describe, expect, it } from "vitest";
  * something shaped like a provider key.
  */
 
-/** Public test values that are safe to commit (Cloudflare Turnstile's documented test secret). */
-const ALLOWED_VALUES = new Set(["1x0000000000000000000000000000000AA"]);
+/**
+ * Public test values that are safe to commit: Cloudflare Turnstile's documented test secret, the
+ * placeholder IP_HASH_KEY for local dev (production sets its own as a Worker secret), and the demo
+ * flag. ALERT_TO, the owner's address, must stay empty here.
+ */
+const ALLOWED_VALUES = new Set(["1x0000000000000000000000000000000AA", "local-test-only-not-a-secret", "1"]);
 
 /** MiniMax (`sk-…`, `sk-cp-…`, `sk-api-…`) and Anthropic (`sk-ant-…`) style keys. */
 const KEY_SHAPE = /\bsk-(?:ant-|cp-|api-)?[A-Za-z0-9_-]{32,}/;

@@ -9,6 +9,7 @@ import type { ServerEvent, Source } from "../protocol/events";
 import type { Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import type { ConversationState, Log } from "./conversation-state";
+import type { Gap } from "./gap-log";
 import { LLM_IDLE_MS, LLM_TOTAL_MS, withDeadlines } from "./deadlines";
 
 export interface TextTurnOptions {
@@ -32,6 +33,12 @@ export interface TextTurnOptions {
    * carries, or, when the turn is stopped (and sends nothing more), one marked interrupted.
    */
   onRecord?(record: TurnRecord): void;
+  /**
+   * Called once, when the reply's data line parsed with coverage adjacent or none (the pressed-answer
+   * rule's filled-in line included), for the gap log. It carries the visitor's question, so the
+   * caller must never log it to the console.
+   */
+  onGap?(gap: Gap): void;
 }
 
 /** The cited refs in order, each with the title its chip shows (the ref itself when untitled). */
@@ -136,6 +143,7 @@ export async function* textTurn(o: TextTurnOptions): AsyncIterable<ServerEvent> 
             dataLine = ev.dataLine;
             if (ev.data) {
               coverage = ev.data.coverage;
+              if (ev.data.coverage !== "direct") o.onGap?.({ mode: "text", coverage: ev.data.coverage, refs: ev.data.refs, question });
               yield { type: "meta", turnId, data: ev.data, sources: sourcesOf(ev.data.refs, o.bundle) };
             } else if (ev.refs?.length) {
               yield { type: "sources", turnId, sources: sourcesOf(ev.refs, o.bundle) };

@@ -1,13 +1,16 @@
 import { SessionRequestSchema, tokenFromAuthorization, type SessionResponse } from "../protocol/chat";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import { mintToken, parseToken, tokenFromProtocols } from "./auth";
-import { runCanary } from "./canary";
+import { demoMode, missingConfig } from "./config";
 import { readJson } from "./conversation";
 import type { Env } from "./env";
-import { pruneDays, restingToday } from "./ledger";
-import { buildProviders } from "./providers";
+import { pruneGaps } from "./gap-log";
+import { pruneDays, pruneVisitors, restingToday, voiceRestingToday } from "./ledger";
+import { buildProviders, NotConfiguredError } from "./providers";
 import { pruneTurns } from "./turn-log";
 import { verifyTurnstile } from "./turnstile";
+import { clientIp } from "./visitor";
+import { watch } from "./watch";
 
 export { Conversation } from "./conversation";
 
@@ -18,15 +21,16 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 
 const notAllowed = (allow: string) => json({ error: "method_not_allowed" }, 405, { allow });
 
-const clientIp = (request: Request) => request.headers.get("cf-connecting-ip") ?? "unknown";
 const log = (level: "info" | "warn" | "error", line: string) => console[level](line);
 const rateLimited = () => json({ error: "rate_limited" }, 429, { "retry-after": "60" });
 
 /**
  * Mints a conversation and its token for a visitor who passed Turnstile. Rate limited per client
- * IP. Without a Turnstile secret it refuses everyone rather than skipping the check. `resting`
- * tells the client the day's shared turns are already used (or the ledger cannot be read, which
- * fails closed), so it can show the static card.
+ * IP. Without a Turnstile secret, IP_HASH_KEY or (outside demo mode) MINIMAX_API_KEY it refuses
+ * everyone rather than skipping a check or serving scripted replies.
+ * `resting` tells the client the day's shared turns are already used (or the ledger cannot be read,
+ * which fails closed), so it can show the static card. `mode` is "text" instead of "voice" while
+ * voice rests for the day (its audio or speech ceiling, or this visitor's own audio seconds), so the client starts in text.
  */
 async function createSession(request: Request, env: Env): Promise<Response> {
   if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
@@ -36,6 +40,7 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   if (!body) return json({ error: "bad_request" }, 400);
   const secret = env.TURNSTILE_SECRET?.trim();
   if (!secret) return json({ error: "turnstile_not_configured" }, 503);
+  if (missingConfig(env).required.length > 0) return json({ error: "not_configured" }, 503);
   const check = await verifyTurnstile({ token: body.turnstile, secret, ip: request.headers.get("cf-connecting-ip") });
   if (!check.ok) {
     console.warn(`turnstile refused: ${check.codes.join(", ") || "no codes"}`);
@@ -44,11 +49,13 @@ async function createSession(request: Request, env: Env): Promise<Response> {
 
   const { token, conversationId, secretHash } = mintToken();
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  const [, resting] = await Promise.all([
+  const [, resting, voiceResting] = await Promise.all([
     secretHash.then((hash) => env.CONVERSATION.get(env.CONVERSATION.idFromName(conversationId)).init(hash, expiresAt)),
     restingToday(env, log),
+    env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, clientIp(request), log),
   ]);
-  const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE, expiresAt, resting };
+  const mode = voiceResting ? "text" : env.ASSISTANT_MODE;
+  const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode, expiresAt, resting };
   return json(session);
 }
 
@@ -85,18 +92,32 @@ async function chat(request: Request, env: Env): Promise<Response> {
 /** Deletes what is past its retention; logs the counts, or why it failed. */
 async function prune(db: D1Database, now: number): Promise<void> {
   try {
-    const [turns, days] = await Promise.all([pruneTurns(db, now), pruneDays(db, now)]);
-    console.info(`retention: deleted ${turns} turns and ${days} daily counts`);
+    const [turns, gaps, days, visitors] = await Promise.all([
+      pruneTurns(db, now),
+      pruneGaps(db, now),
+      pruneDays(db, now),
+      pruneVisitors(db, now),
+    ]);
+    console.info(`retention: deleted ${turns} turns, ${gaps} gaps, ${days} daily counts and ${visitors} visitor counts`);
   } catch (err) {
     console.error(`retention failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
+/**
+ * Readiness: `missing` lists the names (never values) of required and optional config, and `ok` is
+ * false (503) when anything required is missing. 500 when the providers cannot be built for another
+ * reason, such as an LLM_PROFILE not cleared for visitors.
+ */
 function health(env: Env): Response {
-  const base = { protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE };
+  const missing = missingConfig(env);
+  const base = { protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE, demo: demoMode(env), missing };
   try {
-    return json({ ok: true, ...base, providers: buildProviders(env).label });
+    const providers = buildProviders(env).label;
+    const ok = missing.required.length === 0;
+    return json({ ok, ...base, providers }, ok ? 200 : 503);
   } catch (err) {
+    if (err instanceof NotConfiguredError) return json({ ok: false, ...base }, 503);
     return json({ ok: false, ...base, error: err instanceof Error ? err.message : String(err) }, 500);
   }
 }
@@ -119,16 +140,12 @@ export default {
   },
 
   /**
-   * Hourly (cron in wrangler.jsonc): the canary, which logs only its outcome, never answer text;
-   * and retention, which deletes turn log rows after 30 days and daily counts after 7.
+   * Hourly (cron in wrangler.jsonc): the canary and its alerts (watch.ts), which log only outcomes,
+   * never answer text; and retention, which deletes turn log and gap rows after 30 days, daily
+   * counts (the alert claims too) after 7, and per-visitor counts once their UTC day is over.
    */
   scheduled(_controller, env, ctx): void {
-    ctx.waitUntil(
-      runCanary(env).then((r) => {
-        if (r.ok) console.info(`canary ok in ${r.ms} ms`);
-        else console.error(`canary failed: ${r.reason}`);
-      }),
-    );
+    ctx.waitUntil(watch(env));
     ctx.waitUntil(prune(env.DB, Date.now()));
   },
 } satisfies ExportedHandler<Env>;

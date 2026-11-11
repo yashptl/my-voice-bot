@@ -6,7 +6,8 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
-import { spend, utcDay } from "./ledger";
+import { reserveAudio, spend, spendVisitor, utcDay } from "./ledger";
+import { recordGap } from "./gap-log";
 import { recordTurn } from "./turn-log";
 
 // The Durable Object class needs workerd; the routes only talk to it through its namespace stub.
@@ -50,7 +51,17 @@ function brokenDb(): D1Database {
 }
 
 function setup(
-  o: { allow?: boolean; mode?: Env["ASSISTANT_MODE"]; secret?: string | null; db?: D1Database; answer?: ServerEvent[] } = {},
+  o: {
+    allow?: boolean;
+    mode?: Env["ASSISTANT_MODE"];
+    secret?: string | null;
+    ipHashKey?: string | null;
+    /** MINIMAX_API_KEY: a test value by default, null for none. */
+    minimaxKey?: string | null;
+    demo?: boolean;
+    db?: D1Database;
+    answer?: ServerEvent[];
+  } = {},
 ) {
   const keys: string[] = [];
   const forwarded: Request[] = [];
@@ -60,7 +71,14 @@ function setup(
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: "400",
+    DAILY_VOICE_SECONDS: "1800",
+    DAILY_TTS_CHARS: "60000",
+    DAILY_TURNS_PER_IP: "60",
+    DAILY_VOICE_SECONDS_PER_IP: "600",
     TURNSTILE_SECRET: o.secret === null ? undefined : (o.secret ?? TURNSTILE_TEST_SECRET),
+    IP_HASH_KEY: o.ipHashKey === null ? undefined : (o.ipHashKey ?? "test-key"),
+    MINIMAX_API_KEY: o.minimaxKey === null ? undefined : (o.minimaxKey ?? "test-minimax-key"),
+    ASSISTANT_DEMO: o.demo ? "1" : undefined,
     RL_SESSION: {
       async limit({ key }: { key: string }) {
         keys.push(key);
@@ -184,6 +202,25 @@ describe("POST /assistant/session", () => {
     expect(h.inits).toEqual([]);
   });
 
+  it("refuses everyone with 503 not_configured when IP_HASH_KEY is missing, before asking Turnstile", async () => {
+    const h = setup({ ipHashKey: null });
+    const forms = fakeSiteverify({ success: true });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "not_configured" } });
+    expect(forms).toEqual([]);
+    expect(h.inits).toEqual([]);
+  });
+
+  it("refuses everyone with 503 not_configured without MINIMAX_API_KEY unless in demo mode", async () => {
+    const h = setup({ minimaxKey: null });
+    const forms = fakeSiteverify({ success: true });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "not_configured" } });
+    expect(forms).toEqual([]);
+    expect(h.inits).toEqual([]);
+    const demo = setup({ minimaxKey: null, demo: true });
+    fakeSiteverify({ success: true });
+    expect((await call(sessionRequest(), demo.env)).status).toBe(200);
+  });
+
   it("refuses a token Turnstile rejects with 403, minting nothing", async () => {
     const h = setup();
     const forms = fakeSiteverify({ success: false, "error-codes": ["invalid-input-response"] });
@@ -224,13 +261,43 @@ describe("POST /assistant/session", () => {
     expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe(true);
   });
 
-  it("says resting when the ledger cannot be read (fails closed), and logs why", async () => {
+  it("says resting, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
     const h = setup({ db: brokenDb() });
     fakeSiteverify({ success: true });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await json(await call(sessionRequest(), h.env));
-    expect(res).toMatchObject({ status: 200, body: { resting: true } });
+    expect(res).toMatchObject({ status: 200, body: { resting: true, mode: "text" } });
     expect(error).toHaveBeenCalledWith("ledger failed: D1 unavailable");
+  });
+
+  it("reports mode text instead of voice while voice is resting today", async () => {
+    for (const [unit, n] of [
+      ["voice_seconds", 1786],
+      ["tts_chars", 59_501],
+    ] as const) {
+      const db = sqliteD1();
+      await spend(db, unit, n, n, utcDay(Date.now()));
+      const h = setup({ db });
+      fakeSiteverify({ success: true });
+      expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: false });
+    }
+  });
+
+  it("reports mode text for a visitor whose voice seconds are used up, and voice for everyone else", async () => {
+    const h = setup({ db: sqliteD1() });
+    h.env.DAILY_VOICE_SECONDS_PER_IP = "30";
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.8", 15, vi.fn());
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "voice" });
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.7", 15, vi.fn());
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "text", resting: false });
+  });
+
+  it("keeps mode text and off as they are", async () => {
+    const db = sqliteD1();
+    await spend(db, "voice_seconds", 1800, 1800, utcDay(Date.now()));
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), setup({ db, mode: "text" }).env))).body.mode).toBe("text");
   });
 });
 
@@ -272,6 +339,42 @@ describe("POST /assistant/chat", () => {
   });
 });
 
+describe("GET /assistant/health", () => {
+  const health = (env: Env) => call(new Request("https://example.test/assistant/health"), env);
+
+  it("is ok when every required name is set, listing only the missing optional one", async () => {
+    const h = setup();
+    expect(await json(await health(h.env))).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        protocol: 1,
+        mode: "voice",
+        demo: false,
+        missing: { required: [], optional: ["ALERT_TO"] },
+        providers: "llm minimax-flash (MiniMax-M3.1-Flash), tts minimax-speech, stt flux",
+      },
+    });
+  });
+
+  it("is not ok when required config is missing, naming it and never a value", async () => {
+    const h = setup({ secret: null, ipHashKey: null, minimaxKey: null });
+    const res = await json(await health(h.env));
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({
+      ok: false,
+      missing: { required: ["TURNSTILE_SECRET", "IP_HASH_KEY", "MINIMAX_API_KEY"], optional: ["ALERT_TO"] },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("test-key");
+  });
+
+  it("does not require MINIMAX_API_KEY in demo mode, and says it is demo", async () => {
+    const res = await json(await health(setup({ minimaxKey: null, demo: true }).env));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, demo: true, missing: { required: [] } });
+  });
+});
+
 describe("scheduled", () => {
   const run = (env: Env) => {
     const waits: Promise<unknown>[] = [];
@@ -310,19 +413,26 @@ describe("scheduled", () => {
     expect(JSON.stringify(error.mock.calls)).not.toContain("Magenta");
   });
 
-  it("deletes turn log rows after 30 days and daily counts after 7, and logs how many", async () => {
+  it("deletes turn log and gap rows after 30 days, daily counts after 7 and visitor counts once their day is over", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     const db = sqliteD1();
     const now = Date.now();
     await recordTurn(db, { ...RECORD, turnId: "old" }, now - 31 * DAY);
     await recordTurn(db, { ...RECORD, turnId: "recent" }, now - 29 * DAY);
+    const gap = { conversationId: "c1", mode: "text", coverage: "none", refs: [], question: "q" } as const;
+    await recordGap(db, gap, now - 31 * DAY);
+    await recordGap(db, gap, now - 29 * DAY);
     await spend(db, "turns", 1, 1, utcDay(now - 8 * DAY));
     await spend(db, "turns", 1, 1, utcDay(now));
+    await spendVisitor(db, "a".repeat(64), 60, utcDay(now - DAY));
+    await spendVisitor(db, "b".repeat(64), 60, utcDay(now));
     await run(setup({ db, answer: [] }).env);
     expect(db.sqlite.prepare("SELECT turn_id FROM turns").all()).toEqual([{ turn_id: "recent" }]);
+    expect(db.sqlite.prepare("SELECT created_at FROM gaps").all()).toHaveLength(1);
     expect(db.sqlite.prepare("SELECT day FROM daily").all()).toEqual([{ day: utcDay(now) }]);
-    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns and 1 daily counts");
+    expect(db.sqlite.prepare("SELECT day FROM daily_ip").all()).toEqual([{ day: utcDay(now) }]);
+    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns, 1 gaps, 1 daily counts and 1 visitor counts");
   });
 
   it("logs a retention failure without stopping the canary", async () => {

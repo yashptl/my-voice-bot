@@ -1,7 +1,8 @@
 import { DataLineSchema } from "../protocol/data-line";
 
 const OPEN = "<meta>";
-const OPEN_RE = /<meta>/i;
+const OPEN_RE = /<meta>/gi;
+const CLOSE = "</meta>";
 const CLOSE_RE = /<\/meta>/i;
 /** A bare list of refs that some replies end with instead of the data line. */
 const REFS_OPEN = "<refs>";
@@ -30,6 +31,32 @@ const BLANK_START = /^[ \t]*$/;
 const FENCE_OPENER = /```[a-z]*\s*$/i;
 /** A key of the data line, quoted as JSON writes it: what makes a `{` line a data line. */
 const DATA_LINE_KEY = new RegExp(`"(?:${Object.keys(DataLineSchema.shape).join("|")})"\\s*:`);
+
+/** A code fence, which may open the data line right after `<meta>`. */
+const FENCE = "```";
+
+/**
+ * The first `<meta>` that starts the data line, which is one that
+ * (a) has `{` or a code fence as its next non-whitespace text (an empty `<meta></meta>` counts too), or
+ * (b) is at the start of a line (only whitespace since the last newline, or at the start of the reply).
+ * Those are `decided`. Otherwise one with only whitespace, part of `</meta>` or part of a fence after it
+ * so far is undecided: the next chunk settles it. Any other `<meta>` is prose and is skipped.
+ * `lineStart` says whether `text` itself begins a line.
+ */
+function findOpen(text: string, lineStart: boolean): { at: number; decided: boolean } | null {
+  for (const m of text.matchAll(OPEN_RE)) {
+    const before = text.slice(0, m.index);
+    const newline = before.lastIndexOf("\n");
+    const atLineStart = /^[ \t\r]*$/.test(before.slice(newline + 1)) && (newline >= 0 || lineStart);
+    const rest = text.slice(m.index + OPEN.length).trimStart().toLowerCase();
+    if (atLineStart || rest.startsWith("{") || rest.startsWith(FENCE) || rest.startsWith(CLOSE)) {
+      return { at: m.index, decided: true };
+    }
+    // "" or part of "</meta>" or of a fence
+    if (CLOSE.startsWith(rest) || FENCE.startsWith(rest)) return { at: m.index, decided: false };
+  }
+  return null;
+}
 
 /** Length of the longest suffix of `text` that could still grow into `<meta>` or `<refs>`. */
 function partialOpenLength(text: string): number {
@@ -73,8 +100,10 @@ function bareDataLine(held: string): string | null {
  *
  * `push` returns the prose that is safe to show or speak now. It holds back a trailing piece that
  * could be the start of `<meta>` (at most 5 characters), so prose such as "latency < 1 s" flows
- * straight through, and a tag split across chunks never leaks. Everything after `<meta>` is meta.
- * Tags match case-insensitively.
+ * straight through, and a tag split across chunks never leaks. `<meta>` starts the data line when it
+ * is at the start of a line, or when the next non-whitespace text is `{` or a code fence: elsewhere it
+ * is held from the tag on until that settles, and any other character makes it prose ("use the <meta> tag"). Everything after the data
+ * line's `<meta>` is meta. Tags match case-insensitively.
  *
  * Models sometimes drop the tags and end with the bare JSON, or a fenced JSON block. So a line that
  * starts with `{` or a backtick is held until the reply ends: if it is JSON with a data-line key
@@ -110,8 +139,15 @@ export class ReplySplitter {
     const lineStart = this.atLineStart;
     this.held = "";
 
-    const open = text.search(OPEN_RE);
-    if (open >= 0) {
+    const found = findOpen(text, lineStart);
+    if (found && !found.decided) {
+      // `<meta>` with nothing after it yet: show the prose before it, hold the rest until a character settles it.
+      const prose = this.push(text.slice(0, found.at));
+      this.held += text.slice(found.at);
+      return prose;
+    }
+    if (found) {
+      const open = found.at;
       // A held line was prose after all; a code fence opened for the data line is not.
       this.meta = text.slice(open + OPEN.length);
       this.candidate = false;
@@ -146,7 +182,10 @@ export class ReplySplitter {
     }
     const cut = text.length - partialOpenLength(text);
     this.held = text.slice(cut);
-    this.atLineStart = cut === 0 ? lineStart : text[cut - 1] === "\n";
+    // The held part is at a line start when only whitespace lies between it and the last newline.
+    const before = text.slice(0, cut);
+    const newline = before.lastIndexOf("\n");
+    this.atLineStart = /^[ \t\r]*$/.test(before.slice(newline + 1)) && (newline >= 0 || lineStart);
     return text.slice(0, cut);
   }
 

@@ -12,7 +12,17 @@ export type AssistantState = "listening" | "thinking" | "speaking" | "idle";
  * reached, so the client shows the static card (pitch, resume, Messages) instead of the assistant.
  * `busy`: a text answer is still streaming in this conversation.
  */
-export type ErrorCode = "rate_limited" | "auth" | "provider" | "limit" | "resting" | "busy" | "protocol" | "internal";
+export type ErrorCode =
+  | "rate_limited"
+  | "auth"
+  | "provider"
+  | "limit"
+  | "resting"
+  /** Voice only: the day's voice ceilings are reached. Answers continue as text; the socket closes. */
+  | "voice_resting"
+  | "busy"
+  | "protocol"
+  | "internal";
 
 /** A cited knowledge section, with the title the client shows on its chip. */
 export interface Source {
@@ -30,7 +40,12 @@ export type ServerEvent =
   | { type: "state"; state: AssistantState }
   | { type: "transcript"; turnIndex: number; text: string; final: boolean }
   | { type: "turn.start"; turnId: string; question: string }
-  | { type: "sentence"; turnId: string; id: number; text: string }
+  /**
+   * `spoken`, voice only: false when the sentence is shown but not spoken (the reply passed its
+   * spoken-character cap, or voice is resting for the day), so no audio follows for it. Absent in
+   * text mode and on sentences that are spoken.
+   */
+  | { type: "sentence"; turnId: string; id: number; text: string; spoken?: boolean }
   /** `sources` are `data.refs` in order, each with its bundle title. */
   | { type: "meta"; turnId: string; data: DataLine; sources: Source[] }
   /**

@@ -17,6 +17,11 @@ export type VoiceSessionEvent =
   | { type: "mic"; state: MicState }
   | { type: "mark"; turnId: string; mark: ClientMark; at: number };
 
+export interface VoiceSessionOptions {
+  /** Opens the voice socket; tests pass a fake. */
+  createWebSocket?: (url: string, protocols: string[]) => WebSocket;
+}
+
 export type VoiceSessionEventType = VoiceSessionEvent["type"];
 export type VoiceSessionEventOf<T extends VoiceSessionEventType> = Extract<VoiceSessionEvent, { type: T }>;
 
@@ -43,6 +48,8 @@ export class VoiceSession {
   private firstAudioMarked = false;
   private dropAudio = false;
 
+  constructor(private readonly options: VoiceSessionOptions = {}) {}
+
   /** Subscribes to one event type; returns the unsubscribe function. */
   on<T extends VoiceSessionEventType>(type: T, fn: (e: VoiceSessionEventOf<T>) => void): () => void {
     let set = this.listeners.get(type);
@@ -66,7 +73,7 @@ export class VoiceSession {
     const context = (this.context ??= new AudioContext());
     void context.resume();
     this.setStatus("connecting");
-    const urls = assistantUrls(baseUrl, location.href);
+    const urls = assistantUrls(baseUrl, globalThis.location?.href ?? baseUrl);
 
     let session: SessionResponse;
     try {
@@ -78,7 +85,10 @@ export class VoiceSession {
     }
     if (generation !== this.connectGeneration) return; // close() or another connect() ran meanwhile
 
-    const ws = new WebSocket(urls.voice, [WS_SUBPROTOCOL, session.token]);
+    const ws = (this.options.createWebSocket ?? ((url, protocols) => new WebSocket(url, protocols)))(urls.voice.href, [
+      WS_SUBPROTOCOL,
+      session.token,
+    ]);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.addEventListener("open", () => {

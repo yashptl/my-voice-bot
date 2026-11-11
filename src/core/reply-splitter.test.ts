@@ -236,3 +236,67 @@ describe("ReplySplitter", () => {
     expect(end.refs).toBe("role:magenta, skill:rag");
   });
 });
+
+describe("ReplySplitter: a literal <meta> in prose", () => {
+  it("treats <meta> not followed by { as prose", () => {
+    const r = run(["Use the <meta> tag for SEO.\n", `<meta>${META}</meta>`]);
+    expect(r.prose).toBe("Use the <meta> tag for SEO.\n");
+    expect(r.meta).toBe(META);
+  });
+
+  it("decides across chunks: <meta> at the end of one chunk, { at the start of the next", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi.\n<meta>")).toBe("Hi.\n");
+    expect(splitter.push(`${META}</meta>`)).toBe("");
+    expect(splitter.end().meta).toBe(META);
+  });
+
+  it("holds <meta> plus whitespace until the next character shows", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi. <meta> ")).toBe("Hi. ");
+    expect(splitter.push("tags matter.")).toBe("<meta> tags matter.");
+    expect(splitter.end()).toEqual({ meta: null, prose: "" });
+  });
+
+  it("releases a held <meta> as prose at the end of the reply", () => {
+    expect(run(["Use <meta>"])).toEqual({ prose: "Use <meta>", meta: null, refs: undefined });
+  });
+
+  it("gives the same result for every chunk size", () => {
+    const text = `Use the <meta> tag. It helps.\n<meta>${META}</meta>`;
+    for (let size = 1; size < text.length; size++) {
+      expect(run(chunk(text, size)), `chunk size ${size}`).toEqual({ prose: "Use the <meta> tag. It helps.\n", meta: META, refs: undefined });
+    }
+  });
+
+  it("keeps a missing closing tag working", () => {
+    expect(run([`Hi.\n<meta>${META}`])).toMatchObject({ prose: "Hi.\n", meta: META });
+  });
+});
+
+describe("ReplySplitter: <meta> before a fence, or at the start of a line", () => {
+  const FENCED = "```json" + META + "```";
+
+  it("starts the data line at <meta> followed by a code fence", () => {
+    expect(run(["Yash worked at Amazon.", `<meta>${FENCED}</meta>`])).toMatchObject({ prose: "Yash worked at Amazon.", meta: FENCED });
+  });
+
+  it("starts the data line at <meta> at the start of a line, whatever follows", () => {
+    expect(run(["Hi.\n<meta>refs: role:amazon; coverage: direct</meta>"])).toMatchObject({
+      prose: "Hi.\n",
+      meta: "refs: role:amazon; coverage: direct",
+    });
+    expect(run(["<meta>words</meta>"])).toMatchObject({ prose: "", meta: "words" });
+  });
+
+  it("keeps a mid-sentence <meta> before words as prose", () => {
+    expect(run(["Use the <meta> tag."]).prose).toBe("Use the <meta> tag.");
+  });
+
+  it("gives the same result for every chunk size", () => {
+    for (const text of [`Hi.<meta>${FENCED}</meta>`, "Hi.\n  <meta>refs: a</meta>", "Use <meta> tag.\n<meta>x</meta>"]) {
+      const whole = run([text]);
+      for (let size = 1; size < text.length; size++) expect(run(chunk(text, size)), `${size}: ${text}`).toEqual(whole);
+    }
+  });
+});

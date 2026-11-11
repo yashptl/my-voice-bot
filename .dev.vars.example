@@ -1,8 +1,22 @@
 # Copy this file to .dev.vars (gitignored) and put your keys THERE, never here: this file is
-# committed and the repo is public. Both keys are optional: without them the
-# Worker and tests run on fake LLM and TTS providers.
+# committed and the repo is public.
+# Demo mode: scripted replies and silent speech, so a fresh clone runs without a MiniMax key. It is
+# used only while this is 1. A real MINIMAX_API_KEY below always wins over it. Without the key AND
+# without this line the Worker is misconfigured: /assistant/session answers 503 not_configured.
+# Never set it in production.
+ASSISTANT_DEMO=1
 MINIMAX_API_KEY=
 ANTHROPIC_API_KEY=
 # Turnstile: Cloudflare's published always-pass TEST secret, not a real one. It accepts only the
 # test token XXXX.DUMMY.TOKEN.XXXX, which the playground's test site key produces.
 TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+# Keys the per-visitor daily count (an HMAC of the day and client IP), so D1 never holds a raw IP.
+# This value is a public placeholder for local dev and tests only; production sets a long random
+# Worker secret (`openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`). Without it,
+# /assistant/session answers 503 and every answer fails closed.
+IP_HASH_KEY=local-test-only-not-a-secret
+# Voice is on by default (wrangler.jsonc). To try text only locally, uncomment this line.
+# ASSISTANT_MODE=text
+# Alert emails (production secret, the owner's verified Email Routing destination). Leave empty here:
+# without it alerts are only logged.
+ALERT_TO=

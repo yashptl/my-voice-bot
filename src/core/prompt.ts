@@ -36,14 +36,15 @@ export function buildTail(o: { mode: ReplyMode; language: ReplyLanguage; boundar
  * words the model reads are the site's, not the visitor's (a sandwich against pasted instructions).
  */
 export function buildReminder(o: { language: ReplyLanguage }): string {
-  return `(Note from the site, not the visitor: reply in ${LANGUAGE_NAMES[o.language]}, in the reply style given above, following your rules, and end with the data line.)`;
+  return `(Note from the site, not the visitor: reply in ${LANGUAGE_NAMES[o.language]}, in the reply style given above, following your rules (including that, unless the visitor is pressing, you never remark that something is missing from the record, for example "isn't listed" or "the record doesn't show"), and end with the data line.)`;
 }
 
-const TAG_NAME = /visitor_message/gi;
+/** `visitor_message` and its look-alikes: any run of whitespace, `_` or `-` between the words. */
+const TAG_NAME = /visitor[\s_-]*message/gi;
 
 /**
  * Wraps untrusted visitor text in a per-request boundary. Any `visitor_message` the visitor typed is
- * rewritten to `visitor message`, so the text cannot close the boundary or open a new one.
+ * rewritten to `visitor message` (spaced, underscored or hyphenated variants too), so the text cannot close the boundary or open a new one.
  */
 export function wrapVisitorMessage(text: string, boundary: string): string {
   return `<visitor_message id="${boundary}">${text.replace(TAG_NAME, "visitor message")}</visitor_message>`;

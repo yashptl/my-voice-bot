@@ -7,13 +7,15 @@ import type { Bundle } from "../knowledge/types";
 import { LlmError, type LlmPort, type LlmUsage, type NeutralTurn } from "../ports/llm";
 import type { SttEvent, SttPort, SttSession } from "../ports/stt";
 import type { TtsPort, TtsSession } from "../ports/tts";
-import { encodeAudioFrame } from "../protocol/audio";
+import { encodeAudioFrame, MIC_FRAME_BYTES } from "../protocol/audio";
 import type { DataLine, DataLineStatus } from "../protocol/data-line";
 import type { ClientMessage, ErrorCode, ServerEvent } from "../protocol/events";
 import type { GateSummary, GroundingResult, Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
-import type { ConversationState, Log } from "./conversation-state";
+import { MIC_BYTES_PER_SECOND, type ConversationState, type Log } from "./conversation-state";
 import { LLM_IDLE_MS, LLM_TOTAL_MS, STOPPED, within, withDeadlines } from "./deadlines";
+import type { Gap } from "./gap-log";
+import { AUDIO_BLOCK_SECONDS, MAX_SPOKEN_CHARS, type TurnSpend, type VoiceUnit } from "./ledger";
 import { sourcesOf } from "./text-turn";
 
 /** Flux sessions per socket; each quiet gap between questions costs one. */
@@ -39,6 +41,24 @@ const CLOSE_NORMAL = 1000;
 export const VOICE_IDLE_CLOSE_MS = 120_000;
 const CLOSE_PROVIDER = 1011;
 
+/** The next block of mic audio is reserved once less than this many seconds of the socket's reservation is left. */
+const AUDIO_PREFETCH_SECONDS = 5;
+
+export const VOICE_RESTING_MESSAGE = "Voice is resting for today. You can keep asking in text.";
+
+/**
+ * The day's ceilings as the loop needs them (ledger.ts behind them in the Durable Object). Every
+ * call fails closed: a failure counts as a refusal.
+ */
+export interface VoiceLedger {
+  /** Spends one model turn for this visitor and for everyone (ledger.ts spendTurn). */
+  spendTurn(): Promise<TurnSpend>;
+  /** Takes `n` of today's `unit` ahead of use: the day it came from, or null when refused or failing. */
+  reserve(unit: VoiceUnit, n: number): Promise<string | null>;
+  /** Gives back `n` of what `reserve` took on `day`; never throws. */
+  release(unit: VoiceUnit, n: number, day: string): void;
+}
+
 export interface VoiceLoopOptions {
   conversationId: string;
   stt: SttPort;
@@ -53,10 +73,15 @@ export interface VoiceLoopOptions {
   /** The conversation's meter, turn count and history, shared by every socket so a reconnect continues them. */
   state: ConversationState;
   /**
-   * Spends one of the day's shared turns, called before each answer. False (or a failure) sends a
-   * `resting` error and ends the conversation. Omitted: no daily ceiling (tests).
+   * The day's ceilings. Before each answer: one model turn, and MAX_SPOKEN_CHARS of speech. While
+   * the mic streams: mic audio, AUDIO_BLOCK_SECONDS at a time. Omitted: no daily ceilings (tests);
+   * each reply still speaks at most MAX_SPOKEN_CHARS.
    */
-  spendTurn?(): Promise<boolean>;
+  ledger?: VoiceLedger;
+  /** The first block of mic audio, reserved at upgrade before the socket was accepted. */
+  audioReserved?: { day: string; seconds: number };
+  /** When the session expires (`now()` time): the socket closes then, whatever it is doing. */
+  expiresAt?: number;
   /** Called after the loop ends the conversation itself (a limit, or speech recognition failing). */
   closeSocket?(code: number, reason: string): void;
   /** Close the socket after this long idle (see VOICE_IDLE_CLOSE_MS); never when unset. */
@@ -69,6 +94,12 @@ export interface VoiceLoopOptions {
    * (marked interrupted, though nothing more is sent).
    */
   onRecord?(record: TurnRecord): void;
+  /**
+   * Called once per turn when the reply's data line parsed with coverage adjacent or none (the
+   * pressed-answer rule's filled-in line included), with the final transcript, for the gap log.
+   * The caller must never log it to the console.
+   */
+  onGap?(gap: Gap): void;
 }
 
 interface Turn {
@@ -81,7 +112,14 @@ interface Turn {
   tts: Promise<TtsSession | null>;
   ttsSession: TtsSession | null;
   sentences: { id: number; text: string }[];
+  /** Characters handed to TTS: the turn record's `ttsChars`. */
   ttsChars: number;
+  /** The most this reply may speak: MAX_SPOKEN_CHARS, or 0 when the day's characters were refused. */
+  ttsBudget: number;
+  /** A sentence would have passed the budget: it and every later one are captions only. */
+  muted: boolean;
+  /** What this turn reserved from the day's characters, until the unspoken part is given back. */
+  ttsReserved: { day: string; chars: number } | null;
   usage: LlmUsage | null;
   coverage: DataLine["coverage"] | null;
   /** From `meta`: null until the reply was complete. */
@@ -150,8 +188,15 @@ function sessionEndedLog(session: number, why: string, openForMs: number, idleMs
  *
  * Flux ending an open session (it does after ~5 s without audio) only drops it, with an `stt`
  * event; the next mic frame opens a new one. Failing to open Flux, the audio limit, the turn limit
- * or the day's shared turns running out (`spendTurn`) ends the conversation. The limits and the
- * history live in the shared ConversationState.
+ * or the visitor's or everyone's turns running out for the day ends the conversation. The
+ * conversation's limits and history live in the shared ConversationState.
+ *
+ * Voice has daily ceilings of its own (`ledger`). Mic audio is reserved AUDIO_BLOCK_SECONDS at a
+ * time, the next block in the background once less than AUDIO_PREFETCH_SECONDS is left, so audio
+ * never waits on the database. Each reply reserves MAX_SPOKEN_CHARS and speaks sentences while it
+ * stays within them; the rest are captions only (`spoken: false`), and the unspoken part is given
+ * back. Once either reservation is refused, voice rests for the day: the running answer finishes
+ * (as captions, if its speech was refused), then `voice_resting` and the socket closes.
  */
 export class VoiceLoop {
   private readonly o: VoiceLoopOptions;
@@ -159,9 +204,10 @@ export class VoiceLoop {
   /** When the current Flux session opened, and when it was last sent audio (null: not yet). */
   private sessionOpenedAt = 0;
   private lastAudioAt: number | null = null;
-  /** Last mic frame, client message, or turn end; the idle close counts from here. */
+  /** Last accepted mic frame, message about the latest turn, or turn end; the idle close counts from here. */
   private lastActivityAt = 0;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private expiryTimer: ReturnType<typeof setTimeout> | undefined;
   private opening: Promise<void> | null = null;
   private sttGeneration = 0;
   private sttOpens = 0;
@@ -171,6 +217,8 @@ export class VoiceLoop {
   private hash = "";
   private current: Turn | null = null;
   private lastEnded: EndedTurn | null = null;
+  /** The latest turn this socket started; client messages about any other turn are ignored. */
+  private lastTurnId: string | null = null;
   private eager: { turnIndex: number; at: number } | null = null;
   private partial: { turnIndex: number; text: string } | null = null;
   private tooFastReported = false;
@@ -178,10 +226,19 @@ export class VoiceLoop {
   private audioAccounted: number;
   /** Mic frames dropped since the last record. */
   private droppedFrames = 0;
+  /** This socket's reservation of the day's mic audio, per day (a block can land after midnight), in bytes. */
+  private audioBlocks: { day: string; bytes: number }[] = [];
+  private audioReservedBytes = 0;
+  /** Mic audio the meter accepted on this socket, in bytes. */
+  private audioHeardBytes = 0;
+  private reservingAudio = false;
+  /** A reservation was refused: voice rests for the day once the running answer ends. */
+  private resting = false;
 
   constructor(o: VoiceLoopOptions) {
     this.o = o;
     this.audioAccounted = o.state.audioSeconds;
+    if (o.audioReserved) this.addAudioBlock(o.audioReserved.day, o.audioReserved.seconds);
   }
 
   /** The conversation's history (shared with every other socket of the conversation). */
@@ -191,6 +248,7 @@ export class VoiceLoop {
 
   /** Opens STT; sends `ready` once frames can flow. A failure becomes a provider error instead. */
   async start(): Promise<void> {
+    this.armExpiry();
     const [, hash] = await Promise.all([this.openStt(), promptHash(buildStable(this.o.bundle))]);
     this.hash = hash;
     if (this.closed) return;
@@ -207,6 +265,16 @@ export class VoiceLoop {
     this.idleTimer = setTimeout(() => this.checkIdle(), Math.max(0, delay));
   }
 
+  /** Closes the socket when the session expires; expiry was checked only at upgrade before. */
+  private armExpiry(): void {
+    const at = this.o.expiresAt;
+    if (at === undefined) return;
+    this.expiryTimer = setTimeout(() => {
+      this.o.log?.("info", "closing the voice socket: the session expired");
+      this.end(CLOSE_NORMAL, "session expired");
+    }, Math.max(0, at - this.o.now()));
+  }
+
   private checkIdle(): void {
     const limit = this.o.idleCloseMs;
     if (limit === undefined || this.closed) return;
@@ -217,9 +285,20 @@ export class VoiceLoop {
     this.end(CLOSE_NORMAL, "idle");
   }
 
+  /**
+   * One mic frame. Only whole MIC_FRAME_BYTES frames are taken, and only audio the meter accepts
+   * counts as activity: empty or odd frames would otherwise keep an idle socket open for free.
+   */
   onAudio(frame: ArrayBuffer): void {
     if (this.closed) return;
-    this.lastActivityAt = this.o.now();
+    if (frame.byteLength === 0 || frame.byteLength % MIC_FRAME_BYTES !== 0) {
+      return this.sendError("protocol", "Audio must arrive as whole 80 ms frames.");
+    }
+    if (this.o.ledger && this.audioHeardBytes + frame.byteLength > this.audioReservedBytes) {
+      // Past this socket's reservation: the next block is still on its way, or voice is resting.
+      this.droppedFrames++;
+      return this.reserveAudio();
+    }
     switch (this.o.state.addAudio(frame.byteLength)) {
       case "limit":
         this.send({ type: "error", code: "limit", message: "This conversation has used its audio allowance." });
@@ -232,6 +311,9 @@ export class VoiceLoop {
         }
         return;
     }
+    this.lastActivityAt = this.o.now();
+    this.audioHeardBytes += frame.byteLength;
+    this.reserveAudio();
     if (this.session) {
       this.lastAudioAt = this.o.now();
       return this.session.send(frame);
@@ -244,8 +326,9 @@ export class VoiceLoop {
     void this.openStt();
   }
 
+  /** A client message; only one about the latest turn is acted on, or counts as activity. */
   onMessage(m: ClientMessage): void {
-    if (this.closed) return;
+    if (this.closed || m.turnId !== this.lastTurnId) return;
     this.lastActivityAt = this.o.now();
     if (m.type === "interrupt") {
       if (this.current?.id === m.turnId) this.interrupt(this.current, m.lastHeardSentenceId);
@@ -256,18 +339,26 @@ export class VoiceLoop {
     if (t?.id === m.turnId) this.mark(t, m.mark); // server receipt time; the client keeps its own clock
   }
 
-  /** Stops everything without sending anything more; an answer cut off still goes to onRecord. Safe to call twice. */
+  /**
+   * Stops everything without sending anything more. An answer cut off keeps, as text does, the
+   * question and the sentences already sent in history, and still goes to onRecord. The unused
+   * reservations are given back. Safe to call twice.
+   */
   close(): void {
     if (this.closed) return;
     this.closed = true;
     clearTimeout(this.idleTimer);
+    clearTimeout(this.expiryTimer);
     this.pending = [];
     this.session?.close();
     this.session = null;
+    this.releaseAudio();
     const t = this.current;
     this.current = null;
     if (!t) return;
     this.stop(t);
+    this.settleTts(t);
+    this.o.state.addExchange(t.question, t.sentences.map((s) => s.text).join(" "));
     if (t.spent) {
       t.interrupted = true;
       this.o.onRecord?.(this.recordOf(t));
@@ -281,6 +372,64 @@ export class VoiceLoop {
   private end(code: number, reason: string): void {
     this.close();
     this.o.closeSocket?.(code, reason);
+  }
+
+  private addAudioBlock(day: string, seconds: number): void {
+    const bytes = seconds * MIC_BYTES_PER_SECOND;
+    this.audioReservedBytes += bytes;
+    const last = this.audioBlocks.at(-1);
+    if (last?.day === day) last.bytes += bytes;
+    else this.audioBlocks.push({ day, bytes });
+  }
+
+  /** Reserves the next block of mic audio in the background once less than AUDIO_PREFETCH_SECONDS is left. */
+  private reserveAudio(): void {
+    const ledger = this.o.ledger;
+    if (!ledger || this.reservingAudio || this.resting || this.closed) return;
+    if (this.audioReservedBytes - this.audioHeardBytes >= AUDIO_PREFETCH_SECONDS * MIC_BYTES_PER_SECOND) return;
+    this.reservingAudio = true;
+    void ledger
+      .reserve("voice_seconds", AUDIO_BLOCK_SECONDS)
+      .catch(() => null)
+      .then((day) => {
+        this.reservingAudio = false;
+        if (day === null) return this.restAfterAnswer();
+        if (this.closed) return ledger.release("voice_seconds", AUDIO_BLOCK_SECONDS, day);
+        this.addAudioBlock(day, AUDIO_BLOCK_SECONDS);
+      });
+  }
+
+  /** Gives back the mic audio reserved but not used, newest block first, in whole seconds (rounded down). */
+  private releaseAudio(): void {
+    let unused = this.audioReservedBytes - this.audioHeardBytes;
+    for (const block of [...this.audioBlocks].reverse()) {
+      const bytes = Math.min(unused, block.bytes);
+      unused -= bytes;
+      const seconds = Math.floor(bytes / MIC_BYTES_PER_SECOND);
+      if (seconds > 0) this.o.ledger?.release("voice_seconds", seconds, block.day);
+    }
+    this.audioBlocks = [];
+    this.audioReservedBytes = this.audioHeardBytes;
+  }
+
+  /** Gives back the part of the turn's speech reservation it did not speak; once per reservation. */
+  private settleTts(t: Turn): void {
+    const reserved = t.ttsReserved;
+    t.ttsReserved = null;
+    if (reserved && reserved.chars > t.ttsChars) this.o.ledger?.release("tts_chars", reserved.chars - t.ttsChars, reserved.day);
+  }
+
+  /** A reservation was refused: voice rests for the day, once the running answer (if any) has ended. */
+  private restAfterAnswer(): void {
+    if (this.closed) return;
+    this.resting = true;
+    if (!this.current) this.rest();
+  }
+
+  private rest(): void {
+    this.o.log?.("info", "voice is resting for the day; closing the socket");
+    this.sendError("voice_resting", VOICE_RESTING_MESSAGE);
+    this.end(CLOSE_POLICY, "voice resting");
   }
 
   /**
@@ -386,6 +535,9 @@ export class VoiceLoop {
   }
 
   private startTurn(question: string, eagerAt: number | null): void {
+    // Voice is resting: the running answer finishes and the socket closes, so nothing new starts.
+    if (this.resting) return;
+    // Counted now, with no await before it, so a text answer cannot take the conversation's last turn too.
     if (!this.o.state.startTurn()) {
       this.send({ type: "error", code: "limit", message: "This conversation has reached its question limit." });
       return this.end(CLOSE_POLICY, "turn limit");
@@ -403,6 +555,9 @@ export class VoiceLoop {
       ttsSession: null,
       sentences: [],
       ttsChars: 0,
+      ttsBudget: MAX_SPOKEN_CHARS,
+      muted: false,
+      ttsReserved: null,
       usage: null,
       coverage: null,
       dataLine: null,
@@ -418,6 +573,7 @@ export class VoiceLoop {
     };
     this.current = t;
     this.lastEnded = null;
+    this.lastTurnId = t.id;
     this.send({ type: "state", state: "thinking" });
     this.send({ type: "turn.start", turnId: t.id, question });
 
@@ -445,11 +601,11 @@ export class VoiceLoop {
         return null;
       },
     );
-    void this.run(t).catch((err: unknown) => this.o.log?.("error", `turn failed: ${asError(err).message}`));
+    void this.run(t).catch((err: unknown) => this.turnFailed(t, asError(err)));
   }
 
   private async run(t: Turn): Promise<void> {
-    if (!(await this.spendTurn(t))) return;
+    if (!(await this.spend(t))) return;
     t.spent = true;
     let prose: string | null = null;
     try {
@@ -470,6 +626,13 @@ export class VoiceLoop {
           case "sentence": {
             this.mark(t, "firstSentence");
             t.sentences.push({ id: ev.id, text: ev.text });
+            // Spoken while the reply stays within its budget; from the first sentence that would
+            // pass it, captions only, so what is heard has no gaps.
+            t.muted ||= t.ttsChars + ev.text.length > t.ttsBudget;
+            if (t.muted) {
+              this.send({ type: "sentence", turnId: t.id, id: ev.id, text: ev.text, spoken: false });
+              break;
+            }
             t.ttsChars += ev.text.length;
             this.send({ type: "sentence", turnId: t.id, id: ev.id, text: ev.text });
             void t.tts.then((s) => s?.speak(ev.id, ev.text));
@@ -482,6 +645,7 @@ export class VoiceLoop {
             t.dataLine = ev.dataLine;
             if (ev.data) {
               t.coverage = ev.data.coverage;
+              if (ev.data.coverage !== "direct") this.o.onGap?.({ mode: "voice", coverage: ev.data.coverage, refs: ev.data.refs, question: t.question });
               this.send({ type: "meta", turnId: t.id, data: ev.data, sources: sourcesOf(ev.data.refs, this.o.bundle) });
             } else if (ev.refs?.length) {
               this.send({ type: "sources", turnId: t.id, sources: sourcesOf(ev.refs, this.o.bundle) });
@@ -517,17 +681,64 @@ export class VoiceLoop {
   }
 
   /**
-   * Spends one of the day's shared turns before the LLM is called. Refused, or failing, sends
-   * `resting` and ends the conversation (fails closed: an unchecked turn could pass the ceiling).
+   * Before the LLM is called: spends the turn (the visitor's and everyone's) and reserves the reply's
+   * speech, concurrently, so the turn waits one database round trip. True when the model may be
+   * called. A refused speech reservation only mutes the reply and rests voice after it.
    */
-  private async spendTurn(t: Turn): Promise<boolean> {
-    const ok = this.o.spendTurn ? await this.o.spendTurn().catch(() => false) : true;
-    if (t.stopped) return false;
-    if (!ok) {
-      this.sendError("resting", "The assistant is resting for now. Messages is the best way to reach Yash.");
-      this.end(CLOSE_POLICY, "resting");
+  private async spend(t: Turn): Promise<boolean> {
+    const ledger = this.o.ledger;
+    if (!ledger) return !t.stopped;
+    const [spent, day] = await Promise.all([
+      ledger.spendTurn().catch((): TurnSpend => "resting"),
+      ledger.reserve("tts_chars", MAX_SPOKEN_CHARS).catch(() => null),
+    ]);
+    if (day !== null) t.ttsReserved = { day, chars: MAX_SPOKEN_CHARS };
+    if (spent !== "ok") {
+      this.refused(t, spent);
+      return false;
     }
-    return ok;
+    if (t.stopped) {
+      // Interrupted or closed while spending: no model call, so nothing is spoken.
+      this.settleTts(t);
+      return false;
+    }
+    if (day === null) {
+      t.ttsBudget = 0;
+      this.restAfterAnswer();
+    }
+    return true;
+  }
+
+  /**
+   * A turn a daily ceiling refused: no answer, so the conversation's turn and the speech
+   * reservation are given back. `limit` (the visitor's day) or `resting` (everyone's, or the
+   * ledger failing) is sent and the conversation ends.
+   */
+  private refused(t: Turn, spent: Exclude<TurnSpend, "ok">): void {
+    this.o.state.undoTurn();
+    this.settleTts(t);
+    if (t.stopped) return; // interrupted or closed meanwhile: nothing more is sent
+    if (this.current === t) this.current = null;
+    this.stop(t);
+    if (spent === "limit") {
+      this.sendError("limit", "That is all the questions one visitor can ask today. Messages is the best way to reach Yash.");
+      return this.end(CLOSE_POLICY, "visitor limit");
+    }
+    this.sendError("resting", "The assistant is resting for now. Messages is the best way to reach Yash.");
+    this.end(CLOSE_POLICY, "resting");
+  }
+
+  /**
+   * A turn whose run threw (a bug, not a provider failure) still ends: otherwise `current` stays set,
+   * no later question is answered and the idle close never fires.
+   */
+  private turnFailed(t: Turn, err: Error): void {
+    this.o.log?.("error", `turn failed: ${err.message}`);
+    if (t.stopped) return;
+    this.stop(t);
+    t.error ??= "internal";
+    this.sendError("internal", "The assistant could not finish that answer. Please try again.");
+    this.endTurn(t, t.sentences.map((s) => s.text).join(" "));
   }
 
   /** The LLM with the turn's deadlines (see withDeadlines), marking the first answer token as it arrives. */
@@ -598,13 +809,16 @@ export class VoiceLoop {
     t.stopped = true;
     this.lastActivityAt = this.o.now();
     if (this.current === t) this.current = null;
+    this.settleTts(t);
     const index = this.o.state.addExchange(t.question, assistantText);
     const record = this.recordOf(t);
     if (!t.interrupted) this.lastEnded = { id: t.id, sentences: t.sentences, index, record };
     this.send({ type: "turn.end", turnId: t.id, record });
     // Like close(): a turn interrupted while its spend was pending never called the model, so no row.
     if (t.spent) this.o.onRecord?.(record);
+    if (this.resting) return this.rest();
     this.send({ type: "state", state: "listening" });
+    this.armIdle(this.o.idleCloseMs);
   }
 
   /** The turn's record; audio and dropped frames count from the previous record on this socket. */

@@ -13,7 +13,7 @@ export interface StateStorage {
 
 export const DEFAULT_MAX_TURNS = 30;
 export const DEFAULT_MAX_AUDIO_SECONDS = 600;
-const MIC_BYTES_PER_SECOND = MIC_FORMAT.sampleRate * MIC_FORMAT.channels * 2;
+export const MIC_BYTES_PER_SECOND = MIC_FORMAT.sampleRate * MIC_FORMAT.channels * 2;
 /** How much metered audio may go unsaved; a restart of the object loses at most this. */
 const SAVE_METER_EVERY_SECONDS = 5;
 
@@ -97,6 +97,13 @@ export class ConversationState {
     this.started++;
     this.save("turnsStarted", this.started);
     return true;
+  }
+
+  /** Gives back the turn startTurn counted, when a daily ceiling refused it before any answer. */
+  undoTurn(): void {
+    if (this.started === 0) return;
+    this.started--;
+    this.save("turnsStarted", this.started);
   }
 
   /** Appends a question and its answer; returns the answer's index, for replaceAnswer. */

@@ -88,6 +88,20 @@ describe("ConversationState", () => {
     expect(state.turnsStarted).toBe(30);
   });
 
+  it("undoTurn gives back a turn that was refused, saved, and never below 0", async () => {
+    const storage = memoryStorage();
+    const state = stateOn(storage, { maxTurns: 1 });
+    expect(state.startTurn()).toBe(true);
+    expect(state.startTurn()).toBe(false);
+    state.undoTurn();
+    expect(state.turnsStarted).toBe(0);
+    expect(state.startTurn()).toBe(true);
+    state.undoTurn();
+    state.undoTurn();
+    expect(state.turnsStarted).toBe(0);
+    expect((await ConversationState.load({ storage, now: () => Date.now() })).turnsStarted).toBe(0);
+  });
+
   it("keeps the history as exchanges and lets an answer be trimmed", () => {
     const state = stateOn(memoryStorage());
     const index = state.addExchange("Where does Yash work?", "Yash works at Magenta Connect. Want more?");

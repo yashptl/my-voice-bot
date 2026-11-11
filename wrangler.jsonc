@@ -18,17 +18,76 @@
   // The day's shared ceilings and the turn log (schema in migrations/). No database_id: the first
   // deploy creates the database. Locally, `npm run db:migrate:local` applies the migrations.
   "d1_databases": [{ "binding": "DB", "database_name": "yashos-assistant", "migrations_dir": "migrations" }],
+  // Alert emails (src/worker/alerts.ts). No destination restriction: the binding can then send to any
+  // verified destination address in the account, and the recipient is the ALERT_TO secret, so the
+  // address never enters the repo. The sender below is on a domain onboarded to Email Service.
+  "send_email": [{ "name": "ALERT_EMAIL" }],
   // Hourly canary: one real question through the same path visitors use.
   "triggers": { "crons": ["17 * * * *"] },
   "ratelimits": [
     { "name": "RL_SESSION", "namespace_id": "2001", "simple": { "limit": 10, "period": 60 } }
   ],
+  // Secrets, set with `wrangler secret put` (locally in .dev.vars): TURNSTILE_SECRET, IP_HASH_KEY and
+  // MINIMAX_API_KEY (without any of them, /assistant/session answers 503 not_configured), and ALERT_TO,
+  // the verified Email Routing destination for alerts (optional: without it alerts are only logged).
+  // Never set ASSISTANT_DEMO here: "1" serves scripted demo replies and is for .dev.vars only.
   "vars": {
+    // Voice is on at all times; the daily ceilings below cap what it costs. Past a voice ceiling,
+    // voice rests until midnight UTC and the assistant carries on in text. Needs Workers Paid.
     "ASSISTANT_MODE": "voice",
     "LLM_PROFILE": "minimax-flash",
     "TTS_VOICE": "English_FriendlyPerson",
-    // Model turns per UTC day, for everyone together. Past it, the assistant rests until midnight UTC.
-    "DAILY_TURNS": "400"
+    "ALERT_FROM": "assistant@yashos.dev",
+    // Daily ceilings per UTC day, as whole numbers. A missing one uses the same default in code; one
+    // set to anything else counts as 0 (paused) and logs an error. "0" pauses on purpose.
+    // Model turns, for everyone together. Past it, the assistant rests until midnight UTC.
+    "DAILY_TURNS": "400",
+    // Mic seconds sent to Flux, for everyone together, reserved 15 s at a time. Past it, or past
+    // DAILY_TTS_CHARS, voice rests until midnight UTC and the assistant carries on in text.
+    "DAILY_VOICE_SECONDS": "1800",
+    // Characters sent to MiniMax speech, for everyone together, reserved 500 (one reply) at a time.
+    "DAILY_TTS_CHARS": "60000",
+    // Model turns per visitor (client IP), text and voice together, so one visitor can't use up the day.
+    "DAILY_TURNS_PER_IP": "60",
+    // Mic seconds per visitor (client IP), reserved with the global blocks above, so one visitor can't
+    // use up the day's listening. Past it, voice rests for that visitor until midnight UTC.
+    "DAILY_VOICE_SECONDS_PER_IP": "600"
   },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // A test copy on workers.dev, for measuring from Cloudflare's network and rehearsing deploys.
+  // Deploy with `npm run deploy:staging`. It uses Turnstile's test secret, so anyone with the URL
+  // can use it: its daily ceilings are lower. Bindings and vars are not inherited, so they are all
+  // repeated here; no alert email binding.
+  "env": {
+    "staging": {
+      "name": "yashos-assistant-staging",
+      "workers_dev": true,
+      "ai": { "binding": "AI", "remote": true },
+      "durable_objects": {
+        "bindings": [{ "name": "CONVERSATION", "class_name": "Conversation" }]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "yashos-assistant-staging",
+          "database_id": "f8c4d0c0-82a8-437d-a66e-48f4df2689ab",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        { "name": "RL_SESSION", "namespace_id": "2002", "simple": { "limit": 10, "period": 60 } }
+      ],
+      "vars": {
+        "ASSISTANT_MODE": "voice",
+        "LLM_PROFILE": "minimax-flash",
+        "TTS_VOICE": "English_FriendlyPerson",
+        "DAILY_TURNS": "100",
+        "DAILY_VOICE_SECONDS": "1200",
+        "DAILY_TTS_CHARS": "30000",
+        "DAILY_TURNS_PER_IP": "60",
+        "DAILY_VOICE_SECONDS_PER_IP": "600",
+        "ALERT_FROM": "assistant@yashos.dev"
+      }
+    }
+  }
 }

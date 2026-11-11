@@ -5,18 +5,36 @@
  *   npm run knowledge:check   # rebuilds in memory; fails if bundle.json is stale (CI)
  *
  * Both fail on an unknown ref in a doc, contact details in the text, or more than 60 000
- * estimated tokens (the point where the whole-bundle prompt should give way to search).
+ * estimated tokens (the point where the whole-bundle prompt should give way to search), and on any
+ * section sentence the output gate would drop (a link-like name, say), which would otherwise vanish
+ * from answers without a trace.
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { buildBundle, docFromMarkdown } from "../src/knowledge/build";
+import { gateSentence } from "../src/core/output-gate";
+import { SentenceSplitter } from "../src/core/sentences";
 import { ContentSchema } from "../src/knowledge/content-schema";
 
 const TOKEN_LIMIT = 60_000;
 const root = join(import.meta.dirname, "..");
 const docsDir = join(root, "knowledge/docs");
 const out = join(root, "knowledge/bundle.json");
+
+/** Every sentence of every section that the output gate would block, with its section ref and reasons. */
+function gateFailures(text: string): string[] {
+  const failures: string[] = [];
+  for (const section of text.split(/\n\n(?=## )/)) {
+    const ref = /^## (\S+)/.exec(section)?.[1] ?? "?";
+    const splitter = new SentenceSplitter();
+    for (const sentence of [...splitter.push(section), ...splitter.flush()]) {
+      const { blocked } = gateSentence(sentence, "");
+      if (blocked.length > 0) failures.push(`${ref}: ${blocked.join(", ")}: ${sentence}`);
+    }
+  }
+  return failures;
+}
 
 function main(check: boolean): number {
   const parsed = ContentSchema.safeParse(JSON.parse(readFileSync(join(root, "knowledge/content.json"), "utf8")));
@@ -35,6 +53,11 @@ function main(check: boolean): number {
   console.log(`bundle: ${bundle.tokenEstimate} tokens (limit ${TOKEN_LIMIT})`);
   if (bundle.tokenEstimate > TOKEN_LIMIT) {
     console.error("knowledge bundle is over the token limit");
+    return 1;
+  }
+  const failures = gateFailures(bundle.text);
+  if (failures.length > 0) {
+    console.error(`the output gate would drop these knowledge sentences:\n${failures.join("\n")}`);
     return 1;
   }
   if (check) {

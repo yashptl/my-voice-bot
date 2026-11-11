@@ -1,4 +1,4 @@
-import type { DataLine, DataLineStatus } from "../src/protocol/data-line";
+import type { DataLineStatus } from "../src/protocol/data-line";
 import type { TurnRecord } from "../src/protocol/turn-record";
 
 /** What a failed data line cost the answer; null for "ok", which the panel leaves out. */
@@ -13,7 +13,15 @@ const DATA_LINE_PROBLEMS: Record<DataLineStatus, string | null> = {
  * record, plus its data line and the refs its source chips show (from the data line, or from a bare
  * `<refs>` list when the data line failed). Everything here is diagnostics; nothing is visitor text.
  */
-export function Inspector({ record, meta, refs }: { record: TurnRecord; meta: DataLine | null; refs: readonly string[] }) {
+export function Inspector({
+  record,
+  coverage,
+  refs,
+}: {
+  record: TurnRecord;
+  coverage: string | null;
+  refs: readonly string[];
+}) {
   const { marks, tokens, gate, grounding } = record;
   // Null (the reply never finished) is left out too: the grounding row already says so.
   const dataLineProblem = record.dataLine ? DATA_LINE_PROBLEMS[record.dataLine] : null;
@@ -41,7 +49,7 @@ export function Inspector({ record, meta, refs }: { record: TurnRecord; meta: Da
         <dd className="num">{record.costUsd === null ? "unknown (no prices for this model)" : `$${record.costUsd.toFixed(5)}`}</dd>
 
         <dt>Coverage</dt>
-        <dd>{record.coverage ?? meta?.coverage ?? "none reported"}</dd>
+        <dd>{record.coverage ?? coverage ?? "none reported"}</dd>
 
         <dt>Refs</dt>
         <dd>{refs.length > 0 ? refs.join(", ") : "none"}</dd>
