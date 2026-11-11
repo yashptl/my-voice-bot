@@ -11,6 +11,7 @@ import { WS_SUBPROTOCOL } from "../protocol/version";
 import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
+import { recordGap, type Gap } from "./gap-log";
 import { AUDIO_BLOCK_SECONDS, release, reserve, spendTurn, voiceUnitResting } from "./ledger";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
@@ -78,7 +79,8 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array | n
  * closes when the session expires. Text: `POST /assistant/chat` streams one answer at a time as
  * server-sent events (textTurn). Every answer first spends one of the visitor's and one of the
  * day's shared turns (ledger.ts), the visitor being the client IP of the request (for voice, of the
- * upgrade); once it ends its TurnRecord goes to the turn log in D1 (turn-log.ts). A storage alarm
+ * upgrade); once it ends its TurnRecord goes to the turn log in D1 (turn-log.ts), and a question the
+ * knowledge only partly covered goes to the gap log (gap-log.ts). A storage alarm
  * deletes everything RETENTION_MS after the session expires.
  */
 export class Conversation extends DurableObject<Env> {
@@ -158,6 +160,7 @@ export class Conversation extends DurableObject<Env> {
       idleCloseMs: VOICE_IDLE_CLOSE_MS,
       log,
       onRecord: (record) => this.logTurn(record, log),
+      onGap: (gap) => this.logGap(gap, conversationId, log),
     });
 
     const previous = this.live;
@@ -250,6 +253,7 @@ export class Conversation extends DurableObject<Env> {
         now: () => Date.now(),
         log,
         onRecord: (record) => this.logTurn(record, log),
+        onGap: (gap) => this.logGap(gap, conversationId, log),
       });
       const encoder = new TextEncoder();
       // Pushed, not pulled: the turn runs to its end (or its deadline) whatever the reader does,
@@ -301,6 +305,21 @@ export class Conversation extends DurableObject<Env> {
       await recordTurn(this.env.DB, record, at, source);
     })().catch((err: unknown) => {
       log("error", `turn log failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /**
+   * Writes a gap (a question the knowledge only partly covered) to the gap log without waiting for
+   * it, like logTurn. Not for the canary's conversation. The row holds the visitor's question, so a
+   * failure is logged without it.
+   */
+  private logGap(gap: Gap, conversationId: string, log: Log): void {
+    const at = Date.now();
+    void (async () => {
+      if ((await this.ctx.storage.get("source")) === "canary") return;
+      await recordGap(this.env.DB, { ...gap, conversationId }, at);
+    })().catch((err: unknown) => {
+      log("error", `gap log failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 

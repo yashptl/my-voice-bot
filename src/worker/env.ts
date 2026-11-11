@@ -22,6 +22,8 @@ export interface Env {
   DAILY_TTS_CHARS?: string;
   /** Model turns per visitor (client IP), text and voice together. */
   DAILY_TURNS_PER_IP?: string;
+  /** "1" serves scripted demo replies and silent speech when MINIMAX_API_KEY is missing (config.ts). Never set in production. */
+  ASSISTANT_DEMO?: string;
   MINIMAX_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   /** Without it `/assistant/session` refuses every visitor (503), rather than skipping the check. */
@@ -31,4 +33,10 @@ export interface Env {
    * `/assistant/session` refuses every visitor (503) and every model turn fails closed.
    */
   IP_HASH_KEY?: string;
+  /** Where alert emails go: the owner's verified Email Routing destination. A secret, never in the repo. Without it, alerts are logged only. */
+  ALERT_TO?: string;
+  /** The alert sender, on an onboarded Email Service domain. */
+  ALERT_FROM?: string;
+  /** `send_email` binding without a destination restriction. Without it, alerts are logged only. */
+  ALERT_EMAIL?: SendEmail;
 }

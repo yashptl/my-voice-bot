@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { ServerEvent } from "../protocol/events";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { parseToken } from "./auth";
 import { CANARY_QUESTION, runCanary } from "./canary";
 import type { Env } from "./env";
+import { spend, utcDay } from "./ledger";
 
 const ANSWER = "Yash is a Full Stack Developer at Magenta Connect.";
 const record = (error: string | null) => ({ turnId: "t1", mode: "text", error }) as unknown as TurnRecord;
@@ -22,12 +24,29 @@ const GOOD: ServerEvent[] = [
 ];
 
 /** An env whose Conversation stub answers every chat with `reply`, advancing the clock by 450 ms. */
-function setup(o: { events?: ServerEvent[]; reply?: () => Response; mode?: Env["ASSISTANT_MODE"]; fail?: boolean } = {}) {
+function setup(
+  o: {
+    events?: ServerEvent[];
+    reply?: () => Response;
+    mode?: Env["ASSISTANT_MODE"];
+    fail?: boolean;
+    env?: Partial<Env>;
+    /** Turns already used today, against DAILY_TURNS "400" unless `env` says otherwise. */
+    usedToday?: number;
+  } = {},
+) {
+  const db = sqliteD1();
   let clock = 1_000_000;
   const inits: [string, number, string | undefined][] = [];
   const requests: Request[] = [];
   const env = {
     ASSISTANT_MODE: o.mode ?? "voice",
+    TURNSTILE_SECRET: "t",
+    IP_HASH_KEY: "k",
+    MINIMAX_API_KEY: "m",
+    DAILY_TURNS: "400",
+    DB: db,
+    ...o.env,
     CONVERSATION: {
       idFromName: (name: string) => `id:${name}`,
       get: () => ({
@@ -43,10 +62,38 @@ function setup(o: { events?: ServerEvent[]; reply?: () => Response; mode?: Env["
       }),
     },
   } as unknown as Env;
-  return { env, inits, requests, now: () => clock };
+  const used = o.usedToday;
+  const ready = used === undefined ? Promise.resolve() : spend(db, "turns", used, used, utcDay(Date.now())).then(() => {});
+  return { env, inits, requests, now: () => clock, ready };
 }
 
 describe("runCanary", () => {
+  it("is not ok and does not ask when required config is missing", async () => {
+    const h = setup({ env: { MINIMAX_API_KEY: undefined } });
+    expect(await runCanary(h.env, h.now)).toEqual({ ok: false, ms: 0, reason: "not configured" });
+    expect(h.inits).toEqual([]);
+  });
+
+  it("asks in demo mode without a key", async () => {
+    const h = setup({ env: { MINIMAX_API_KEY: undefined, ASSISTANT_DEMO: "1" } });
+    expect((await runCanary(h.env, h.now)).ok).toBe(true);
+  });
+
+  it("does not ask once today's shared turns are used up: skipped as resting, not a failure", async () => {
+    const h = setup({ usedToday: 400 });
+    await h.ready;
+    expect(await runCanary(h.env, h.now)).toEqual({ ok: true, ms: 0, reason: null, skipped: "resting" });
+    expect(h.inits).toEqual([]);
+  });
+
+  it("asks while turns are left, and counts a refusal that raced the last turn as resting too", async () => {
+    const h = setup({ usedToday: 399 });
+    await h.ready;
+    expect((await runCanary(h.env, h.now)).skipped).toBeUndefined();
+    const raced = setup({ reply: () => Response.json({ error: "resting" }, { status: 503 }) });
+    expect(await runCanary(raced.env, raced.now)).toEqual({ ok: true, ms: 450, reason: null, skipped: "resting" });
+  });
+
   it("is ok when the answer has a sentence, a meta and a clean turn.end, timed end to end", async () => {
     const h = setup();
     expect(await runCanary(h.env, h.now)).toEqual({ ok: true, ms: 450, reason: null });
@@ -97,8 +144,8 @@ describe("runCanary", () => {
   });
 
   it("fails on an HTTP refusal, with its status and error", async () => {
-    const h = setup({ reply: () => Response.json({ error: "resting" }, { status: 503 }) });
-    expect(await runCanary(h.env, h.now)).toEqual({ ok: false, ms: 450, reason: "http 503 resting" });
+    const h = setup({ reply: () => Response.json({ error: "limit" }, { status: 429 }) });
+    expect(await runCanary(h.env, h.now)).toEqual({ ok: false, ms: 450, reason: "http 429 limit" });
   });
 
   it("fails when the object throws", async () => {

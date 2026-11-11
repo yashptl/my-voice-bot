@@ -60,7 +60,7 @@ const REFUND_VISITOR = "UPDATE daily_ip SET used = MAX(0, used - 1) WHERE day = 
 type Spent = { ok: true; used: number } | { ok: false };
 
 /** Spends `n` of `day`'s `ceiling` for `unit`: the new count, or `ok: false` when it would pass the ceiling. */
-export async function spend(db: D1Database, unit: LedgerUnit, n: number, ceiling: number, day: string): Promise<Spent> {
+export async function spend(db: D1Database, unit: string, n: number, ceiling: number, day: string): Promise<Spent> {
   const row = await db.prepare(SPEND).bind(day, unit, n, ceiling).first<{ used: number }>();
   return row ? { ok: true, used: row.used } : { ok: false };
 }
@@ -69,12 +69,12 @@ export async function spend(db: D1Database, unit: LedgerUnit, n: number, ceiling
  * Gives `n` of `unit` back to `day`. The caller passes the day it spent from, so a refund that runs
  * after UTC midnight cannot credit the new day.
  */
-export async function refund(db: D1Database, unit: LedgerUnit, n: number, day: string): Promise<void> {
+export async function refund(db: D1Database, unit: string, n: number, day: string): Promise<void> {
   await db.prepare(REFUND).bind(day, unit, n).run();
 }
 
 /** `day`'s count for `unit` so far; 0 when nothing was spent. */
-export async function used(db: D1Database, unit: LedgerUnit, day: string): Promise<number> {
+export async function used(db: D1Database, unit: string, day: string): Promise<number> {
   const row = await db.prepare("SELECT used FROM daily WHERE day = ?1 AND unit = ?2").bind(day, unit).first<{ used: number }>();
   return row?.used ?? 0;
 }

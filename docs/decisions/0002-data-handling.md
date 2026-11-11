@@ -1,6 +1,6 @@
 # 0002: How each processor handles visitor data
 
-- **Status:** Recorded 2026-11-07 (Phase 0, Task 11). Feeds the privacy decision in [0001](0001-phase-0-results.md) and the visitor disclosure.
+- **Status:** Recorded 2026-11-07 (Phase 0, Task 11); owner decisions and the data inventory added 2026-11-11. Feeds the privacy decision in [0001](0001-phase-0-results.md) and the visitor disclosure.
 - **Method:** Primary sources only (each vendor's own policies, terms and docs), all read 2026-11-07. Wording is summarised, not quoted. **Not stated** means the sources listed here don't say. It does not mean "no".
 
 ## What reaches whom
@@ -12,7 +12,7 @@
 | Cloudflare Workers AI, running Deepgram Flux (`@cf/deepgram/flux`) | Visitor microphone audio in voice mode (16 kHz PCM) | Transcripts and turn events |
 | Cloudflare Workers and Durable Objects (this app's own runtime and storage) | Everything above, in transit; the `Conversation` object holds the history, deleted 30 days after the session expires | Not applicable |
 
-Redacting emails and phone numbers before the model sees them is a blueprint commitment for Phase 1. Phase 0 code only strips invisible characters and caps length.
+The code strips invisible characters and caps length, and nothing more: visitor text is not redacted (see Owner decisions below).
 
 ## MiniMax (text and speech API)
 
@@ -37,7 +37,7 @@ Redacting emails and phone numbers before the model sees them is a blueprint com
 | Retention of inputs and outputs | Zero data retention: for standard inference, inputs and outputs are not kept once the response is delivered. The exceptions are storage features the customer chooses (R2, KV, Durable Objects, Vectorize, AI Gateway logs or cache, application logs, batch or async jobs) and legal or safety obligations. Operational metadata (ids, timestamps, sizes, counts, latency, status codes) is kept, without content. The Flux model page marks the model "Zero data retention: Yes". |
 | Training and opt-outs | Cloudflare says it does not train AI models on Workers AI customer content. Content kept for legal or safety reasons is not used to train or improve any product. No opt-out is needed. |
 | Sub-processors | For Workers AI, the list names CoreWeave, Inc. (US) and Nebius BV (England). Cloudflare Group companies may also act as sub-processors for support work. Deepgram is not on the list. |
-| What this means here | The `Conversation` Durable Object stores visitor text and transcripts. That storage is a feature this app chooses, so the zero-retention promise does not cover it: its retention is this app's own 30-day deletion commitment. For the Durable Object that is enforced in code: `init` sets a storage alarm for 30 days after the session expires, and the alarm deletes everything the object stored (`deleteAll`). The D1 turn log holds no visitor text (measurements only, see `migrations/0001_init.sql`), and the hourly cron deletes its rows 30 days after they were written. |
+| What this means here | The `Conversation` Durable Object stores visitor text and transcripts. That storage is a feature this app chooses, so the zero-retention promise does not cover it: its retention is this app's own 30-day deletion commitment. For the Durable Object that is enforced in code: `init` sets a storage alarm for 30 days after the session expires, and the alarm deletes everything the object stored (`deleteAll`). The D1 turn log holds no visitor text (measurements only, see `migrations/0001_init.sql`), and the hourly cron deletes its rows 30 days after they were written. The gap log does hold visitor text, on the same 30-day schedule (see the data inventory). |
 | Sources (read 2026-11-07) | Workers AI data usage, last updated Oct 16, 2026: https://developers.cloudflare.com/workers-ai/platform/data-usage/ · Flux model page: https://developers.cloudflare.com/workers-ai/models/flux/ · Workers AI overview: https://developers.cloudflare.com/workers-ai/ · Privacy Policy, effective Nov 4, 2025: https://www.cloudflare.com/privacypolicy/ · Self-Serve Subscription Agreement, updated Sept 12, 2025: https://www.cloudflare.com/terms/ · Sub-processors, updated Oct 1, 2025: https://www.cloudflare.com/gdpr/subprocessors/cloudflare-services/ |
 
 ## Deepgram (author of Flux)
@@ -54,6 +54,24 @@ Redacting emails and phone numbers before the model sees them is a blueprint com
 | Sources (read 2026-11-07) | Your data at Deepgram: https://developers.deepgram.com/trust-security/your-data · Model Improvement Partnership Program: https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program · Deepgram Terms: https://deepgram.com/terms · `mip_opt_out` on Workers AI: https://developers.cloudflare.com/workers-ai/models/flux/ |
 
 Not covered: Anthropic. The `anthropic-haiku` profile runs only in the probes, and only when `ANTHROPIC_API_KEY` is set. The Worker refuses it: `buildProviders` (in `src/worker/providers.ts`) throws when `LLM_PROFILE` is `anthropic-haiku`, with or without a key, so it never sees visitor data in Phase 0. It needs its own entry here, and that profile added to the visitor allowlist in `buildProviders`, before it serves visitors. Where Cloudflare stores the `Conversation` Durable Object was not researched either.
+
+## Owner decisions (2026-11-11)
+
+1. **No redaction of visitor input.** Emails and phone numbers a visitor types are not removed before the model sees them, and the gap log (below) keeps the question as sent. Visitor text reaches MiniMax as typed. This replaces the earlier Phase 1 plan to redact. The output gate still blocks emails and phone numbers in answers, so the assistant never repeats one, and the disclosure still asks visitors not to share personal details.
+2. **MiniMax stays the text model, with its terms accepted.** Yash accepts the MiniMax API terms as read above: no stated retention period, input and output may be used to improve its services, and no opt-out stated. The visitor disclosure (`src/client/disclosure.ts`) names those terms: that messages go to MiniMax, which writes the answers and the voice and may use them to improve its services. The "If MiniMax's terms become a blocker" route below stays available.
+
+## Data inventory (this app's own storage)
+
+| Where | Holds | Visitor text? | Kept |
+| --- | --- | --- | --- |
+| `Conversation` Durable Object | History (questions, answers, transcripts), the token's secret hash, the session expiry | Yes | Deleted 30 days after the session expires (storage alarm) |
+| D1 `turns` | One row of measurements per turn (`migrations/0001_init.sql`) | No | 30 days, deleted hourly |
+| D1 `gaps` | Questions the knowledge only partly covered (coverage `adjacent` or `none`): the question as sent or transcribed, unredacted, plus the first 8 characters of the conversation id, mode, coverage, cited refs and time (`migrations/0006_gaps.sql`). Never the answer. Not written for the hourly canary | Yes | 30 days, deleted hourly |
+| D1 `daily` | Day, unit and count for the shared ceilings, and the `alert:<kind>` claims | No | 7 days |
+| D1 `daily_ip` | Turns per visitor per day, keyed by an HMAC-SHA256 of the day and client IP under the `IP_HASH_KEY` secret: no raw IP, and one day's rows cannot be matched to another's (`migrations/0005_daily_ip.sql`) | No | Deleted once its UTC day ends |
+| Worker logs | Status codes, error codes, counts. By rule never visitor or answer text, keys or addresses | No | Per Workers Logs retention |
+
+Alert emails (kind, UTC time, reason code) never contain visitor text. Yash reads the gap log with `npm run gaps`.
 
 ## What the visitor disclosure can truthfully say
 

@@ -18,19 +18,26 @@
   // The day's shared ceilings and the turn log (schema in migrations/). No database_id: the first
   // deploy creates the database. Locally, `npm run db:migrate:local` applies the migrations.
   "d1_databases": [{ "binding": "DB", "database_name": "yashos-assistant", "migrations_dir": "migrations" }],
+  // Alert emails (src/worker/alerts.ts). No destination restriction: the binding can then send to any
+  // verified destination address in the account, and the recipient is the ALERT_TO secret, so the
+  // address never enters the repo. The sender below is on a domain onboarded to Email Service.
+  "send_email": [{ "name": "ALERT_EMAIL" }],
   // Hourly canary: one real question through the same path visitors use.
   "triggers": { "crons": ["17 * * * *"] },
   "ratelimits": [
     { "name": "RL_SESSION", "namespace_id": "2001", "simple": { "limit": 10, "period": 60 } }
   ],
-  // Secrets, set with `wrangler secret put` (locally in .dev.vars): TURNSTILE_SECRET and IP_HASH_KEY
-  // (without either, /assistant/session answers 503), MINIMAX_API_KEY (optional: the demo without it).
+  // Secrets, set with `wrangler secret put` (locally in .dev.vars): TURNSTILE_SECRET, IP_HASH_KEY and
+  // MINIMAX_API_KEY (without any of them, /assistant/session answers 503 not_configured), and ALERT_TO,
+  // the verified Email Routing destination for alerts (optional: without it alerts are only logged).
+  // Never set ASSISTANT_DEMO here: "1" serves scripted demo replies and is for .dev.vars only.
   "vars": {
     // Text first. Voice is switched on in Phase 3, once its daily ceilings below are confirmed
     // against the Workers AI and MiniMax dashboards.
     "ASSISTANT_MODE": "text",
     "LLM_PROFILE": "minimax-flash",
     "TTS_VOICE": "English_FriendlyPerson",
+    "ALERT_FROM": "assistant@yashos.dev",
     // Daily ceilings per UTC day, as whole numbers. A missing one uses the same default in code; one
     // set to anything else counts as 0 (paused) and logs an error. "0" pauses on purpose.
     // Model turns, for everyone together. Past it, the assistant rests until midnight UTC.

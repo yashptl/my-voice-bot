@@ -128,7 +128,7 @@ const QUESTION = "Where does Yash work?";
  */
 async function chatSetup(
   o: {
-    db?: "ok" | "refuse" | "throw" | "no-log";
+    db?: "ok" | "refuse" | "throw" | "no-log" | "no-gaps";
     sqlite?: ReturnType<typeof sqliteD1>;
     vars?: Partial<Env>;
     ai?: unknown;
@@ -140,10 +140,12 @@ async function chatSetup(
   const s = fakeState();
   if (o.turnsStarted !== undefined) s.data.set("turnsStarted", o.turnsStarted);
   const db = o.sqlite ?? sqliteD1();
-  const failing = (sql: string) => o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns"));
+  const failing = (sql: string) =>
+    o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns")) || (o.db === "no-gaps" && sql.includes("INTO gaps"));
   const env = {
     AI: o.ai ?? {},
     ASSISTANT_MODE: "voice",
+    ASSISTANT_DEMO: "1", // no MINIMAX_API_KEY: the scripted demo is explicit now
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: o.db === "refuse" ? "0" : "400",
@@ -164,7 +166,8 @@ async function chatSetup(
   const usedToday = (unit: LedgerUnit) => used(db, unit, utcDay(Date.now()));
   const visitorCounts = () => db.sqlite.prepare("SELECT used FROM daily_ip ORDER BY used").all().map((r) => r.used);
   const turnRows = () => db.sqlite.prepare("SELECT * FROM turns").all();
-  return { conversation, token: minted.token, data: s.data, spentToday, usedToday, visitorCounts, turnRows, db };
+  const gapRows = () => db.sqlite.prepare("SELECT * FROM gaps").all();
+  return { conversation, token: minted.token, data: s.data, spentToday, usedToday, visitorCounts, turnRows, gapRows, db };
 }
 
 const IP = "203.0.113.7";
@@ -426,6 +429,37 @@ describe("Conversation POST /assistant/chat", () => {
     const next = await h.conversation.fetch(chat(h.token, { message: "And before that?" }));
     expect(next.status).toBe(200);
     await readEvents(next);
+  });
+
+  it("writes a gap row for a question the knowledge did not cover: the question as sent, mode, coverage, refs", async () => {
+    const h = await chatSetup();
+    const asked = "Tell me a joke, my email is a@b.co";
+    await readEvents(await h.conversation.fetch(chat(h.token, { message: asked })));
+    await sleep(0);
+    expect(h.gapRows()).toEqual([
+      expect.objectContaining({ conversation: parseToken(h.token)?.conversationId.slice(0, 8), mode: "text", coverage: "none", refs: "[]", question: asked }),
+    ]);
+  });
+
+  it("writes no gap row when the knowledge answered directly, or for the canary", async () => {
+    const direct = await chatSetup();
+    await readEvents(await direct.conversation.fetch(chat(direct.token)));
+    await sleep(0);
+    expect(direct.gapRows()).toEqual([]);
+    const canary = await chatSetup({ source: "canary" });
+    await readEvents(await canary.conversation.fetch(chat(canary.token, { message: "Tell me a joke" })));
+    await sleep(0);
+    expect(canary.gapRows()).toEqual([]);
+  });
+
+  it("still streams the whole answer when the gap log fails, and logs why without the question", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = await chatSetup({ db: "no-gaps" });
+    const events = await readEvents(await h.conversation.fetch(chat(h.token, { message: "Tell me a joke" })));
+    await sleep(0);
+    expect(events.map((e) => e.type).slice(-2)).toEqual(["meta", "turn.end"]);
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^conversation \w+: gap log failed: D1 unavailable$/));
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("joke");
   });
 
   it("still requires a WebSocket upgrade on any other path", async () => {

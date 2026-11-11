@@ -14,6 +14,7 @@ import { createMiniMaxTts } from "../adapters/minimax-tts";
 import type { LlmPort, LlmRequest } from "../ports/llm";
 import type { SttPort } from "../ports/stt";
 import type { TtsPort } from "../ports/tts";
+import { demoMode } from "./config";
 import type { Env } from "./env";
 
 export interface DemoReply {
@@ -62,10 +63,13 @@ export const DEMO_REPLIES: DemoReply[] = [
   },
 ];
 
-const WRAPPED = /<visitor_message id="[^"]*">([\s\S]*)<\/visitor_message>\s*$/;
+const WRAPPED = /<visitor_message id="[^"]*">([\s\S]*)<\/visitor_message>/;
 
-/** The visitor's own words from the last turn, without the boundary wrapper. */
-function visitorText(req: LlmRequest): string {
+/**
+ * The visitor's own words from the last turn, without the boundary wrapper. The site's note comes
+ * after the closing tag, so the match must not be anchored to the end.
+ */
+export function visitorText(req: LlmRequest): string {
   const last = req.turns.at(-1)?.text ?? "";
   return WRAPPED.exec(last)?.[1] ?? last;
 }
@@ -92,6 +96,14 @@ function createDemoLlm(): LlmPort {
  */
 const VISITOR_PROFILES: ReadonlySet<string> = new Set<LlmProfileId>(["minimax-flash"]);
 
+/** No MINIMAX_API_KEY and not in demo mode: the Worker is not configured to answer (see config.ts). */
+export class NotConfiguredError extends Error {
+  constructor() {
+    super("not configured: MINIMAX_API_KEY is missing and ASSISTANT_DEMO is not 1");
+    this.name = "NotConfiguredError";
+  }
+}
+
 export interface Providers {
   llm: LlmPort;
   /** The LLM profile's prices, for the cost estimate; null for the demo LLM. */
@@ -103,8 +115,9 @@ export interface Providers {
 
 /**
  * The providers for one conversation. MiniMax LLM (profile from LLM_PROFILE) and MiniMax speech when
- * their keys are set, otherwise the scripted demo LLM and silent fake speech. Flux always: Workers AI
- * needs no key. An unknown LLM_PROFILE, or one not cleared for visitors, throws.
+ * the key is set (it always wins). Without it, the scripted demo LLM and silent fake speech only when
+ * ASSISTANT_DEMO is "1"; otherwise NotConfiguredError. Flux always: Workers AI needs no key. An
+ * unknown LLM_PROFILE, or one not cleared for visitors, throws.
  */
 export function buildProviders(env: Env): Providers {
   const profile = env.LLM_PROFILE?.trim() || DEFAULT_LLM_PROFILE;
@@ -115,6 +128,7 @@ export function buildProviders(env: Env): Providers {
   }
   const minimaxKey = env.MINIMAX_API_KEY?.trim();
   const real = createLlmFromEnv(env);
+  if (!real && !demoMode(env)) throw new NotConfiguredError();
   const llm = real ?? createDemoLlm();
   const tts = minimaxKey
     ? createMiniMaxTts({ apiKey: minimaxKey, voiceId: env.TTS_VOICE, connect: connectWorker })

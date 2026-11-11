@@ -3,6 +3,7 @@ import { createFakeLlm } from "../adapters/fake-llm";
 import { createFakeStt } from "../adapters/fake-stt";
 import { createFakeTts } from "../adapters/fake-tts";
 import { buildStable, promptHash } from "../core/prompt";
+import { PRESSED_ANSWER } from "../core/rules";
 import type { Bundle } from "../knowledge/types";
 import { LlmError, type LlmPort } from "../ports/llm";
 import type { TtsPort } from "../ports/tts";
@@ -10,6 +11,7 @@ import { decodeAudioFrame, VOICE_FORMAT } from "../protocol/audio";
 import type { ServerEvent } from "../protocol/events";
 import type { TurnRecord } from "../protocol/turn-record";
 import { ConversationState } from "./conversation-state";
+import type { Gap } from "./gap-log";
 import type { TurnSpend, VoiceUnit } from "./ledger";
 import { VoiceLoop, type VoiceLedger } from "./voice-loop";
 
@@ -54,6 +56,7 @@ function setup(
   const signals: AbortSignal[] = [];
   const closes: { code: number; reason: string }[] = [];
   const logged: TurnRecord[] = [];
+  const gaps: Gap[] = [];
   const stt = createFakeStt();
   const llm =
     o.llm ??
@@ -108,8 +111,9 @@ function setup(
     closeSocket: (code, reason) => void closes.push({ code, reason }),
     log: (level, line) => void logs.push(`${level}: ${line}`),
     onRecord: (r) => void logged.push(structuredClone(r)),
+    onGap: (g) => void gaps.push(structuredClone(g)),
   });
-  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged };
+  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged, gaps };
 }
 
 type H = ReturnType<typeof setup>;
@@ -1406,5 +1410,36 @@ describe("VoiceLoop robustness", () => {
     expect(h.loop.history[1]?.text).toBe(PROSE);
     await vi.advanceTimersByTimeAsync(120_000);
     expect(h.closes).toEqual([{ code: 1000, reason: "idle" }]);
+  });
+});
+
+describe("VoiceLoop onGap (the gap log)", () => {
+  it("is not called when the knowledge answered directly", async () => {
+    const h = setup();
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(h.gaps).toEqual([]);
+  });
+
+  it("gets the final transcript and refs of an adjacent answer", async () => {
+    const h = setup({ reply: `${S0}\n<meta>{"refs":["role:magenta"],"coverage":"adjacent"}</meta>` });
+    await h.loop.start();
+    await ask(h, "Does Yash know Rust?");
+    await vi.runAllTimersAsync();
+    expect(h.gaps).toEqual([{ mode: "voice", coverage: "adjacent", refs: ["role:magenta"], question: "Does Yash know Rust?" }]);
+  });
+
+  it("gets a pressed answer whose data line the rules filled in, and nothing when the data line is missing", async () => {
+    const pressed = setup({ reply: PRESSED_ANSWER });
+    await pressed.loop.start();
+    await ask(pressed, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(pressed.gaps).toEqual([{ mode: "voice", coverage: "none", refs: [], question: QUESTION }]);
+    const missing = setup({ reply: `${S0} ${S1}` });
+    await missing.loop.start();
+    await ask(missing, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(missing.gaps).toEqual([]);
   });
 });
