@@ -1,0 +1,36 @@
+name: probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Measured runs per profile, size and cache state
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+
+jobs:
+  llm:
+    # GitHub-hosted runners are in the US, which gives the "us-actions" vantage point.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run probe:llm -- --runs "$RUNS" --label us-actions
+        env:
+          RUNS: ${{ inputs.runs }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: probe-results
+          path: probes/results/

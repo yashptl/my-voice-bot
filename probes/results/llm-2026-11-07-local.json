@@ -1,0 +1,672 @@
+{
+  "probe": "llm",
+  "date": "2026-11-07",
+  "startedAt": "2026-11-07T21:40:31.800Z",
+  "label": "local",
+  "mode": "voice",
+  "runs": 1,
+  "survivalMinutes": [],
+  "questions": [
+    "Where does Yash work right now, and what does Yash do there?",
+    "What did Yash work on at Amazon?",
+    "Has Yash built anything with LLMs in production?",
+    "How strong is Yash on the frontend?",
+    "Tell me about the field operations platform.",
+    "What is Yash studying at Georgia Tech?",
+    "Has Yash led a team?",
+    "Which backend languages and frameworks does Yash use?",
+    "Is Yash open to new roles, and where is Yash based?",
+    "What's the most impressive thing Yash has shipped?"
+  ],
+  "sizes": {
+    "actual": {
+      "tokenEstimate": 2864,
+      "bundleVersion": "cba605d45e7f",
+      "stableChars": 16372,
+      "promptHash": "f708b3b68e6e"
+    },
+    "20k": {
+      "tokenEstimate": 20135,
+      "bundleVersion": "b6788f0fae41",
+      "stableChars": 85457,
+      "promptHash": "5fe8a34ac5ab"
+    }
+  },
+  "profiles": [
+    {
+      "id": "minimax-flash",
+      "model": "MiniMax-M3.1-Flash",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.015,
+        "output": 0.6
+      },
+      "skipped": null
+    },
+    {
+      "id": "minimax-m3",
+      "model": "MiniMax-M3",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.06,
+        "output": 1.2
+      },
+      "skipped": null
+    },
+    {
+      "id": "anthropic-haiku",
+      "model": "claude-haiku-5-5",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "output": 0.5
+      },
+      "skipped": "ANTHROPIC_API_KEY not set"
+    }
+  ],
+  "summary": [
+    {
+      "profile": "minimax-flash",
+      "size": "actual",
+      "cache": "cold",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 2146.2,
+        "p95": 2146.2,
+        "min": 2146.2,
+        "max": 2146.2
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 2146.5,
+        "p95": 2146.5,
+        "min": 2146.5,
+        "max": 2146.5
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 2203.6,
+        "p95": 2203.6,
+        "min": 2203.6,
+        "max": 2203.6
+      },
+      "done": {
+        "n": 1,
+        "p50": 2372.9,
+        "p95": 2372.9,
+        "min": 2372.9,
+        "max": 2372.9
+      },
+      "meanPromptTokens": 4042,
+      "meanCachedInput": 128,
+      "meanReasoning": 0,
+      "meanOutput": 57,
+      "meanCostUsd": 0.0006232200000000001
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "actual",
+      "cache": "warm",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 1594.5,
+        "p95": 1594.5,
+        "min": 1594.5,
+        "max": 1594.5
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 1595,
+        "p95": 1595,
+        "min": 1595,
+        "max": 1595
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 1595.8,
+        "p95": 1595.8,
+        "min": 1595.8,
+        "max": 1595.8
+      },
+      "done": {
+        "n": 1,
+        "p50": 1780.2,
+        "p95": 1780.2,
+        "min": 1780.2,
+        "max": 1780.2
+      },
+      "meanPromptTokens": 4015,
+      "meanCachedInput": 128,
+      "meanReasoning": 0,
+      "meanOutput": 73,
+      "meanCostUsd": 0.0006287699999999998
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "20k",
+      "cache": "cold",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 2253.6,
+        "p95": 2253.6,
+        "min": 2253.6,
+        "max": 2253.6
+      },
+      "firstReasoning": {
+        "n": 1,
+        "p50": 2260.8,
+        "p95": 2260.8,
+        "min": 2260.8,
+        "max": 2260.8
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 2460.2,
+        "p95": 2460.2,
+        "min": 2460.2,
+        "max": 2460.2
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 2476.5,
+        "p95": 2476.5,
+        "min": 2476.5,
+        "max": 2476.5
+      },
+      "done": {
+        "n": 1,
+        "p50": 2623.4,
+        "p95": 2623.4,
+        "min": 2623.4,
+        "max": 2623.4
+      },
+      "meanPromptTokens": 15938,
+      "meanCachedInput": 128,
+      "meanReasoning": 58,
+      "meanOutput": 128,
+      "meanCostUsd": 0.0024502200000000003
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "20k",
+      "cache": "warm",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 2256.5,
+        "p95": 2256.5,
+        "min": 2256.5,
+        "max": 2256.5
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 2257.2,
+        "p95": 2257.2,
+        "min": 2257.2,
+        "max": 2257.2
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 2266.4,
+        "p95": 2266.4,
+        "min": 2266.4,
+        "max": 2266.4
+      },
+      "done": {
+        "n": 1,
+        "p50": 2541.7,
+        "p95": 2541.7,
+        "min": 2541.7,
+        "max": 2541.7
+      },
+      "meanPromptTokens": 15895,
+      "meanCachedInput": 128,
+      "meanReasoning": 0,
+      "meanOutput": 94,
+      "meanCostUsd": 0.0024233699999999998
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "actual",
+      "cache": "cold",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 4299.6,
+        "p95": 4299.6,
+        "min": 4299.6,
+        "max": 4299.6
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 4300.1,
+        "p95": 4300.1,
+        "min": 4300.1,
+        "max": 4300.1
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 4385.8,
+        "p95": 4385.8,
+        "min": 4385.8,
+        "max": 4385.8
+      },
+      "done": {
+        "n": 1,
+        "p50": 4822.9,
+        "p95": 4822.9,
+        "min": 4822.9,
+        "max": 4822.9
+      },
+      "meanPromptTokens": 4022,
+      "meanCachedInput": 128,
+      "meanReasoning": 0,
+      "meanOutput": 100,
+      "meanCostUsd": 0.0012958800000000001
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "actual",
+      "cache": "warm",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 1615.7,
+        "p95": 1615.7,
+        "min": 1615.7,
+        "max": 1615.7
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 1616,
+        "p95": 1616,
+        "min": 1616,
+        "max": 1616
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 1655.3,
+        "p95": 1655.3,
+        "min": 1655.3,
+        "max": 1655.3
+      },
+      "done": {
+        "n": 1,
+        "p50": 2981.5,
+        "p95": 2981.5,
+        "min": 2981.5,
+        "max": 2981.5
+      },
+      "meanPromptTokens": 3975,
+      "meanCachedInput": 3840,
+      "meanReasoning": 0,
+      "meanOutput": 90,
+      "meanCostUsd": 0.0003789
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "20k",
+      "cache": "cold",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 2423.1,
+        "p95": 2423.1,
+        "min": 2423.1,
+        "max": 2423.1
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 2425.1,
+        "p95": 2425.1,
+        "min": 2425.1,
+        "max": 2425.1
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 2477.3,
+        "p95": 2477.3,
+        "min": 2477.3,
+        "max": 2477.3
+      },
+      "done": {
+        "n": 1,
+        "p50": 2715.7,
+        "p95": 2715.7,
+        "min": 2715.7,
+        "max": 2715.7
+      },
+      "meanPromptTokens": 15911,
+      "meanCachedInput": 128,
+      "meanReasoning": 0,
+      "meanOutput": 83,
+      "meanCostUsd": 0.004842180000000001
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "20k",
+      "cache": "warm",
+      "runs": 1,
+      "okRuns": 1,
+      "ttfb": {
+        "n": 1,
+        "p50": 2241.9,
+        "p95": 2241.9,
+        "min": 2241.9,
+        "max": 2241.9
+      },
+      "firstReasoning": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "firstAnswerToken": {
+        "n": 1,
+        "p50": 2242.2,
+        "p95": 2242.2,
+        "min": 2242.2,
+        "max": 2242.2
+      },
+      "firstClause": {
+        "n": 1,
+        "p50": 2757.2,
+        "p95": 2757.2,
+        "min": 2757.2,
+        "max": 2757.2
+      },
+      "done": {
+        "n": 1,
+        "p50": 3762.8,
+        "p95": 3762.8,
+        "min": 3762.8,
+        "max": 3762.8
+      },
+      "meanPromptTokens": 15869,
+      "meanCachedInput": 15744,
+      "meanReasoning": 0,
+      "meanOutput": 120,
+      "meanCostUsd": 0.0011261399999999999
+    }
+  ],
+  "survival": [],
+  "records": [
+    {
+      "profile": "minimax-flash",
+      "size": "actual",
+      "cache": "cold",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 2146.2,
+        "firstReasoning": null,
+        "firstAnswerToken": 2146.5,
+        "firstClause": 2203.6,
+        "done": 2372.9
+      },
+      "usage": {
+        "input": 3914,
+        "cachedInput": 128,
+        "output": 57,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3.1-Flash",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 262,
+      "dataLine": "missing",
+      "costUsd": 0.0006232200000000001
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "actual",
+      "cache": "warm",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 1594.5,
+        "firstReasoning": null,
+        "firstAnswerToken": 1595,
+        "firstClause": 1595.8,
+        "done": 1780.2
+      },
+      "usage": {
+        "input": 3887,
+        "cachedInput": 128,
+        "output": 73,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3.1-Flash",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 200,
+      "dataLine": "ok",
+      "costUsd": 0.0006287699999999998
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "20k",
+      "cache": "cold",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 2253.6,
+        "firstReasoning": 2260.8,
+        "firstAnswerToken": 2460.2,
+        "firstClause": 2476.5,
+        "done": 2623.4
+      },
+      "usage": {
+        "input": 15810,
+        "cachedInput": 128,
+        "output": 128,
+        "reasoning": 58,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3.1-Flash",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 217,
+      "dataLine": "ok",
+      "costUsd": 0.0024502200000000003
+    },
+    {
+      "profile": "minimax-flash",
+      "size": "20k",
+      "cache": "warm",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 2256.5,
+        "firstReasoning": null,
+        "firstAnswerToken": 2257.2,
+        "firstClause": 2266.4,
+        "done": 2541.7
+      },
+      "usage": {
+        "input": 15767,
+        "cachedInput": 128,
+        "output": 94,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3.1-Flash",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 290,
+      "dataLine": "ok",
+      "costUsd": 0.0024233699999999998
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "actual",
+      "cache": "cold",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 4299.6,
+        "firstReasoning": null,
+        "firstAnswerToken": 4300.1,
+        "firstClause": 4385.8,
+        "done": 4822.9
+      },
+      "usage": {
+        "input": 3894,
+        "cachedInput": 128,
+        "output": 100,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 335,
+      "dataLine": "ok",
+      "costUsd": 0.0012958800000000001
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "actual",
+      "cache": "warm",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 1615.7,
+        "firstReasoning": null,
+        "firstAnswerToken": 1616,
+        "firstClause": 1655.3,
+        "done": 2981.5
+      },
+      "usage": {
+        "input": 135,
+        "cachedInput": 3840,
+        "output": 90,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 291,
+      "dataLine": "ok",
+      "costUsd": 0.0003789
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "20k",
+      "cache": "cold",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 2423.1,
+        "firstReasoning": null,
+        "firstAnswerToken": 2425.1,
+        "firstClause": 2477.3,
+        "done": 2715.7
+      },
+      "usage": {
+        "input": 15783,
+        "cachedInput": 128,
+        "output": 83,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 245,
+      "dataLine": "ok",
+      "costUsd": 0.004842180000000001
+    },
+    {
+      "profile": "minimax-m3",
+      "size": "20k",
+      "cache": "warm",
+      "run": 1,
+      "question": 0,
+      "ok": true,
+      "error": null,
+      "marks": {
+        "ttfb": 2241.9,
+        "firstReasoning": null,
+        "firstAnswerToken": 2242.2,
+        "firstClause": 2757.2,
+        "done": 3762.8
+      },
+      "usage": {
+        "input": 125,
+        "cachedInput": 15744,
+        "output": 120,
+        "reasoning": 0,
+        "reasoningEstimated": true,
+        "model": "MiniMax-M3",
+        "stopReason": "end_turn"
+      },
+      "proseChars": 423,
+      "dataLine": "ok",
+      "costUsd": 0.0011261399999999999
+    }
+  ]
+}

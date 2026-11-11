@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "@cloudflare/workers-types"]
+  },
+  "include": [
+    "scripts",
+    "probes",
+    "evals",
+    "tests",
+    "src/protocol",
+    "src/ports",
+    "src/core",
+    "src/adapters",
+    "src/knowledge",
+    "*.config.ts",
+    "**/*.test.ts"
+  ]
+}

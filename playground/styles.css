@@ -1,0 +1,400 @@
+/* Playground base styles and the text chat. The voice spike keeps its own rules in VoiceSpike.tsx. */
+
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#fafaf9, #141414);
+  --surface: light-dark(#ffffff, #1d1d1d);
+  --surface-2: light-dark(#f2f2f0, #262626);
+  --text: light-dark(#1c1c1e, #ececec);
+  --muted: light-dark(#5c5f66, #a4a4a4);
+  --border: light-dark(#e2e2de, #363636);
+  --accent: light-dark(#2952c8, #8fb0ff);
+  --accent-text: light-dark(#ffffff, #101827);
+  --accent-soft: light-dark(#edf1fc, #1d2840);
+  --problem: light-dark(#a1001b, #ff8f8f);
+  --highlight: light-dark(#ffe9a8, #5c4a00);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+#root {
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Header and tabs */
+
+.page-header h1 {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs [role="tab"] {
+  margin-bottom: -1px;
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tabs [role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+/* Buttons and chips */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--surface-2);
+}
+
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.button.primary:hover {
+  filter: brightness(1.08);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  filter: none;
+}
+
+/* Text chat */
+
+.chat {
+  max-width: 42rem;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.greeting {
+  margin: 0;
+  color: var(--text);
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.question {
+  align-self: flex-end;
+  max-width: 85%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius) var(--radius) 4px var(--radius);
+  background: var(--accent-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.answer p {
+  margin: 0;
+}
+
+.answer-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.thinking {
+  color: var(--muted);
+}
+
+.dots::after {
+  display: inline-block;
+  width: 1.2em;
+  content: "…";
+  animation: dots 1.2s steps(4, end) infinite;
+  overflow: hidden;
+  vertical-align: bottom;
+}
+
+@keyframes dots {
+  from {
+    width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dots::after {
+    animation: none;
+  }
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.note.problem,
+.card .problem {
+  color: var(--problem);
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sources li {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 24px 0 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.answer .card {
+  margin: 0;
+}
+
+.card p {
+  margin: 0;
+}
+
+.card-title {
+  font-weight: 600;
+}
+
+/* Focused from code when the card replaces the composer (tabindex -1), not a control: no ring. */
+.card-title:focus {
+  outline: none;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  margin: 24px -16px 0;
+  padding: 12px 16px;
+  background: var(--bg);
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 3.25rem;
+  max-height: 12rem;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+  field-sizing: content;
+}
+
+.composer textarea::placeholder {
+  color: var(--muted);
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.counter {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.hint {
+  margin: 0 0 8px;
+  color: var(--problem);
+  font-size: 0.875rem;
+}
+
+.footnote {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* Under the hood */
+
+.inspector {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 0.8125rem;
+}
+
+.inspector summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.inspector dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 10px 0 0;
+}
+
+.inspector dt {
+  color: var(--muted);
+}
+
+.inspector dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.inspector .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.inspector .hash {
+  font-family: var(--mono);
+}
+
+.inspector .error {
+  color: var(--problem);
+}
+
+.inspector mark {
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--highlight);
+  color: inherit;
+}
+
+@media (max-width: 30rem) {
+  .inspector dl {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .inspector dd + dt {
+    margin-top: 6px;
+  }
+}

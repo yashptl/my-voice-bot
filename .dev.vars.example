@@ -1,0 +1,8 @@
+# Copy this file to .dev.vars (gitignored) and put your keys THERE, never here: this file is
+# committed and the repo is public. Both keys are optional: without them the
+# Worker and tests run on fake LLM and TTS providers.
+MINIMAX_API_KEY=
+ANTHROPIC_API_KEY=
+# Turnstile: Cloudflare's published always-pass TEST secret, not a real one. It accepts only the
+# test token XXXX.DUMMY.TOKEN.XXXX, which the playground's test site key produces.
+TURNSTILE_SECRET=1x0000000000000000000000000000000AA

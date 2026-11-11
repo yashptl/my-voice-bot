@@ -1,0 +1,413 @@
+{
+  "schemaVersion": 1,
+  "profile": {
+    "name": "Yash",
+    "fullName": "Yash Patel",
+    "role": "Full-stack and AI engineer",
+    "pitch": "I build interfaces people enjoy and the systems behind them.",
+    "summary": "I work across the stack: frontend architecture, Python and Java services, and applied AI. I care about the details on the screen and the decisions behind them, like who can see which data and how the next engineer will maintain it.",
+    "location": "Ahmedabad, India",
+    "timeZone": "Asia/Kolkata",
+    "availability": {
+      "open": true,
+      "label": "Open to new roles"
+    },
+    "headline": {
+      "stack": [
+        "react",
+        "nextjs",
+        "python",
+        "fastapi"
+      ],
+      "ai": [
+        "llms",
+        "rag",
+        "vector-db"
+      ]
+    }
+  },
+  "domains": [
+    {
+      "id": "frontend",
+      "label": "Frontend",
+      "summary": "Interfaces with a clear visual language and architecture that can grow."
+    },
+    {
+      "id": "backend",
+      "label": "Backend",
+      "summary": "APIs, permissions, and data models that stay understandable."
+    },
+    {
+      "id": "ai",
+      "label": "AI and data",
+      "summary": "Language models connected to the right context, on solid ML foundations."
+    },
+    {
+      "id": "platform",
+      "label": "Platform",
+      "summary": "Storage, delivery, and observability that keep things running."
+    }
+  ],
+  "roles": [
+    {
+      "id": "magenta",
+      "company": "Magenta Connect",
+      "short": "Magenta",
+      "title": "Full Stack Developer",
+      "location": "Ahmedabad, India",
+      "period": "Aug 2025 - now",
+      "summary": "Modernizing an enterprise sales platform, from its interface to its intelligence layer.",
+      "highlights": [
+        "Built an internal AI agent on retrieval-augmented generation and vector search for context-aware insights.",
+        "Moved the platform to Module Federation micro-frontends and a centralized theme engine.",
+        "Designed hierarchical RBAC with action-level permissions across organizational tiers.",
+        "Shipped a dynamic form engine that took field sales reporting fully digital, plus live tracking on Google Maps."
+      ],
+      "skills": [
+        "react",
+        "typescript",
+        "module-federation",
+        "python",
+        "fastapi",
+        "maps",
+        "llms",
+        "rag",
+        "vector-db",
+        "postgres"
+      ]
+    },
+    {
+      "id": "techsquad",
+      "company": "Techsquad",
+      "short": "Techsquad",
+      "title": "Software Developer / Analyst",
+      "location": "Remote, contract",
+      "period": "Jun 2023 - Jan 2024",
+      "summary": "Turning manual enterprise workflows into repeatable, data-driven systems.",
+      "highlights": [
+        "Led a cross-functional team of 8 through an ERP overhaul: 20% lower operating costs, delivered 10% under budget.",
+        "Built automated data pipelines that cut manual effort by 40% and sped up processing by 30%.",
+        "Used SQL and visualization to find workflow bottlenecks; kept uptime at 95% through the rollout."
+      ],
+      "skills": [
+        "python",
+        "sql",
+        "pandas",
+        "testing",
+        "git"
+      ]
+    },
+    {
+      "id": "amazon",
+      "company": "Amazon",
+      "short": "Amazon",
+      "title": "Software Development Engineer",
+      "location": "Toronto, Canada",
+      "period": "Feb 2022 - Mar 2023",
+      "summary": "Owning full-stack features and the operational work that keeps them dependable.",
+      "highlights": [
+        "Built full-stack features for high-concurrency systems and launched them with zero post-launch defects.",
+        "Ran on-call rotations and cut the ticket queue by 30%.",
+        "Built automated testing frameworks and CI pipelines, plus telemetry for feature health.",
+        "Mentored new hires on architecture and led code reviews."
+      ],
+      "skills": [
+        "java",
+        "react",
+        "typescript",
+        "aws",
+        "cicd",
+        "testing",
+        "monitoring",
+        "git"
+      ]
+    },
+    {
+      "id": "alberta",
+      "company": "University of Alberta",
+      "short": "UAlberta",
+      "title": "Frontend Developer",
+      "location": "Edmonton, Canada, contract",
+      "period": "Jan 2021 - May 2021",
+      "summary": "Making social engagement data easy to compare and explore.",
+      "highlights": [
+        "Built a Next.js and GraphQL platform comparing engagement across Instagram profiles.",
+        "Created more than ten visualization and comparison tools from third-party API data.",
+        "Improved load speed by 25% and widened data coverage by 40% through new API integrations."
+      ],
+      "skills": [
+        "nextjs",
+        "react",
+        "javascript",
+        "graphql",
+        "rest"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "fieldops",
+      "name": "Field operations platform",
+      "kind": "Professional work at Magenta Connect",
+      "year": "2025",
+      "summary": "One platform for field sales teams: dynamic forms, live tracking, and access that follows the org chart.",
+      "problem": "Field teams reported on paper, managers had no live view of the field, and every tier of the organization needed different access to the same data.",
+      "approach": "A schema-driven form engine non-technical admins can configure, hierarchical RBAC with action-level permissions, follow-up workflows with automated WhatsApp ledger sharing, and Google Maps tracking on refactored FastAPI services.",
+      "result": "Sales reporting went fully digital, managers see field operations as they happen, and the whole suite shares one centrally themed interface.",
+      "stack": [
+        "React",
+        "FastAPI",
+        "PostgreSQL",
+        "Google Maps",
+        "RBAC"
+      ]
+    },
+    {
+      "id": "analytics",
+      "name": "AI analytics platform",
+      "kind": "Independent project",
+      "summary": "Instagram analytics you can talk to. Ask a question, get the trend and a strategy behind it.",
+      "problem": "Engagement metrics are only useful when people can find the story in them. The original university dashboard showed numbers but could not explain them.",
+      "approach": "Re-engineered the dashboard into a SaaS platform with Module Federation, so the analytics engine deploys on its own. An LLM agent uses retrieval over a vector database to answer questions about the data.",
+      "result": "Cross-profile dashboards for engagement, reach, and sentiment, plus natural-language questions that turn into marketing strategies.",
+      "stack": [
+        "Next.js",
+        "Module Federation",
+        "LLMs",
+        "RAG",
+        "Vector DB"
+      ]
+    },
+    {
+      "id": "yashos",
+      "name": "YashOS",
+      "kind": "Personal experiment, you are here",
+      "year": "2026",
+      "summary": "This portfolio. A tiny operating system with two personalities and a physics engine.",
+      "problem": "A portfolio can show how its maker thinks about interaction and detail, not just list a stack.",
+      "approach": "A window manager, a store built from small slices, and app interiors that each borrow a real app's shape. Every interaction honours reduced motion.",
+      "result": "The thing you are using right now. Try zero gravity from the menu bar.",
+      "stack": [
+        "Next.js",
+        "TypeScript",
+        "Zustand",
+        "Motion"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "id": "react",
+      "label": "React",
+      "domain": "frontend",
+      "note": "Led the frontend overhaul and theme engine at Magenta Connect."
+    },
+    {
+      "id": "nextjs",
+      "label": "Next.js",
+      "domain": "frontend",
+      "note": "Built the UAlberta engagement analytics platform, and this site."
+    },
+    {
+      "id": "typescript",
+      "label": "TypeScript",
+      "domain": "frontend",
+      "note": "Default language for frontends at Magenta Connect and Amazon."
+    },
+    {
+      "id": "javascript",
+      "label": "JavaScript",
+      "domain": "frontend"
+    },
+    {
+      "id": "tailwind",
+      "label": "Tailwind",
+      "domain": "frontend"
+    },
+    {
+      "id": "module-federation",
+      "label": "Module Federation",
+      "domain": "frontend",
+      "note": "Split the Magenta platform into independently deployable micro-frontends."
+    },
+    {
+      "id": "graphql",
+      "label": "GraphQL",
+      "domain": "frontend",
+      "note": "Powered the comparison dashboards at UAlberta."
+    },
+    {
+      "id": "rest",
+      "label": "REST",
+      "domain": "frontend"
+    },
+    {
+      "id": "python",
+      "label": "Python",
+      "domain": "backend",
+      "note": "FastAPI services at Magenta Connect and data pipelines at Techsquad."
+    },
+    {
+      "id": "java",
+      "label": "Java",
+      "domain": "backend",
+      "note": "Backend services for full-stack features at Amazon."
+    },
+    {
+      "id": "fastapi",
+      "label": "FastAPI",
+      "domain": "backend",
+      "note": "Refactored for high-concurrency, real-time geospatial tracking."
+    },
+    {
+      "id": "django",
+      "label": "Django",
+      "domain": "backend"
+    },
+    {
+      "id": "flask",
+      "label": "Flask",
+      "domain": "backend"
+    },
+    {
+      "id": "spring",
+      "label": "Spring Boot",
+      "domain": "backend"
+    },
+    {
+      "id": "node",
+      "label": "Node.js",
+      "domain": "backend"
+    },
+    {
+      "id": "maps",
+      "label": "Maps API",
+      "domain": "backend",
+      "note": "Live movement tracking and outlet mapping for field teams."
+    },
+    {
+      "id": "llms",
+      "label": "LLMs",
+      "domain": "ai",
+      "note": "An internal AI agent at Magenta Connect and a natural-language analytics agent."
+    },
+    {
+      "id": "rag",
+      "label": "RAG",
+      "domain": "ai",
+      "note": "Retrieval that grounds the Magenta agent in company context."
+    },
+    {
+      "id": "vector-db",
+      "label": "Vector DBs",
+      "domain": "ai",
+      "note": "Semantic search behind both AI agents."
+    },
+    {
+      "id": "pandas",
+      "label": "Pandas",
+      "domain": "ai",
+      "note": "Analysis behind the Techsquad workflow automation."
+    },
+    {
+      "id": "ml",
+      "label": "Machine learning",
+      "domain": "ai",
+      "note": "Core of the MS in Computer Science at Georgia Tech."
+    },
+    {
+      "id": "neural-nets",
+      "label": "Neural nets",
+      "domain": "ai",
+      "note": "Studied in depth at Georgia Tech."
+    },
+    {
+      "id": "rl",
+      "label": "RL",
+      "domain": "ai",
+      "note": "Reinforcement learning coursework at Georgia Tech."
+    },
+    {
+      "id": "postgres",
+      "label": "PostgreSQL",
+      "domain": "platform",
+      "note": "The relational backbone of the Magenta platform."
+    },
+    {
+      "id": "mongodb",
+      "label": "MongoDB",
+      "domain": "platform"
+    },
+    {
+      "id": "sql",
+      "label": "SQL",
+      "domain": "platform",
+      "note": "Found the bottlenecks in Techsquad's ERP workflows."
+    },
+    {
+      "id": "firebase",
+      "label": "Firebase",
+      "domain": "platform"
+    },
+    {
+      "id": "aws",
+      "label": "AWS",
+      "domain": "platform",
+      "note": "Cloud infrastructure for services at Amazon."
+    },
+    {
+      "id": "cicd",
+      "label": "CI/CD",
+      "domain": "platform",
+      "note": "Built CI pipelines that shortened deployment cycles at Amazon."
+    },
+    {
+      "id": "monitoring",
+      "label": "Monitoring",
+      "domain": "platform",
+      "note": "Telemetry for feature health at Amazon."
+    },
+    {
+      "id": "testing",
+      "label": "Testing",
+      "domain": "platform",
+      "note": "Automated test frameworks at Amazon and Techsquad."
+    },
+    {
+      "id": "git",
+      "label": "Git",
+      "domain": "platform"
+    }
+  ],
+  "education": [
+    {
+      "id": "gatech",
+      "school": "Georgia Institute of Technology",
+      "short": "Georgia Tech",
+      "degree": "MS in Computer Science",
+      "focus": "Machine learning specialization",
+      "location": "Remote",
+      "period": "Aug 2025 - now",
+      "skills": [
+        "ml",
+        "neural-nets",
+        "rl"
+      ]
+    },
+    {
+      "id": "ualberta",
+      "school": "University of Alberta",
+      "short": "UAlberta",
+      "degree": "BSc in Computer Science",
+      "focus": "Mathematics minor",
+      "location": "Edmonton, Canada",
+      "period": "Graduated 2021",
+      "skills": []
+    }
+  ],
+  "computed": {
+    "shippingSince": 2021,
+    "currentRoleId": "magenta",
+    "currentStudyId": "gatech"
+  }
+}

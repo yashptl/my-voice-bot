@@ -1,0 +1,1117 @@
+<title>YashOS Assistant Blueprint</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~46rem) with figures that run wider; dark-first like YashOS. */
+:root {
+  --bg: #0a0b0e;
+  --surface: #121418;
+  --surface-2: #191c22;
+  --ink: #ecedef;
+  --ink-2: #c3c6cd;
+  --muted: #8d919b;
+  --line: rgb(255 255 255 / 0.09);
+  --line-strong: rgb(255 255 255 / 0.18);
+  --accent: #e5804a;
+  --accent-soft: rgb(229 128 74 / 0.16);
+  --positive: #7fc8a9;
+  --positive-soft: rgb(127 200 169 / 0.14);
+  --info: #86b4e8;
+  --info-soft: rgb(134 180 232 / 0.13);
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --step--1: 0.8125rem;
+  --step-0: 1rem;
+  --step-1: 1.1875rem;
+  --step-2: 1.5rem;
+  --step-3: 2.25rem;
+  --radius: 10px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #eef0f3;
+    --ink: #15171b;
+    --ink-2: #33373e;
+    --muted: #5b606b;
+    --line: rgb(20 23 27 / 0.1);
+    --line-strong: rgb(20 23 27 / 0.22);
+    --accent: #b9551f;
+    --accent-soft: rgb(185 85 31 / 0.12);
+    --positive: #217a55;
+    --positive-soft: rgb(33 122 85 / 0.11);
+    --info: #2a64a8;
+    --info-soft: rgb(42 100 168 / 0.1);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef0f3;
+  --ink: #15171b;
+  --ink-2: #33373e;
+  --muted: #5b606b;
+  --line: rgb(20 23 27 / 0.1);
+  --line-strong: rgb(20 23 27 / 0.22);
+  --accent: #b9551f;
+  --accent-soft: rgb(185 85 31 / 0.12);
+  --positive: #217a55;
+  --positive-soft: rgb(33 122 85 / 0.11);
+  --info: #2a64a8;
+  --info-soft: rgb(42 100 168 / 0.1);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 96px;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+code, .mono { font-family: var(--font-mono); font-size: 0.875em; }
+code { background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 5px; overflow-wrap: anywhere; }
+
+.page { max-width: 1080px; margin: 0 auto; }
+.col { max-width: 46rem; }
+section { padding-top: 56px; display: grid; gap: 16px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: var(--step-3); letter-spacing: -0.035em; font-weight: 700; }
+h2 { font-size: var(--step-2); letter-spacing: -0.02em; font-weight: 650; }
+h3 { font-size: var(--step-1); letter-spacing: -0.01em; font-weight: 600; }
+p { margin: 0; }
+ul, ol { margin: 0; padding-left: 1.25rem; display: grid; gap: 6px; }
+.lede { font-size: var(--step-1); color: var(--ink-2); line-height: 1.5; }
+.muted { color: var(--muted); }
+.eyebrow { font-family: var(--font-mono); font-size: var(--step--1); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+
+header.top { padding-block: 48px 28px; display: grid; gap: 18px; border-bottom: 1px solid var(--line); }
+.status { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill { font-family: var(--font-mono); font-size: var(--step--1); padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-2); }
+.pill.accent { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.glance div { background: var(--surface); padding: 14px 16px; display: grid; gap: 2px; align-content: start; }
+.glance b { font-size: var(--step-2); font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.glance span { color: var(--muted); font-size: var(--step--1); }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--step--1); }
+nav.toc a { color: var(--ink-2); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); }
+
+figure { margin: 8px 0 0; display: grid; gap: 10px; }
+.fig-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+.fig-wrap svg { display: block; width: 100%; height: auto; min-width: 660px; }
+figcaption { color: var(--muted); font-size: var(--step--1); max-width: 46rem; }
+
+.d-group { fill: none; stroke: var(--line-strong); stroke-dasharray: 5 5; }
+.d-box { fill: var(--surface-2); stroke: var(--line-strong); }
+.d-box-hot { fill: var(--accent-soft); stroke: var(--accent); }
+.d-box-ok { fill: var(--positive-soft); stroke: var(--positive); }
+.d-box-info { fill: var(--info-soft); stroke: var(--info); }
+.d-t { fill: var(--ink); font-family: var(--font-sans); font-size: 13px; font-weight: 600; }
+.d-s { fill: var(--muted); font-family: var(--font-sans); font-size: 11.5px; }
+.d-m { fill: var(--ink-2); font-family: var(--font-mono); font-size: 11.5px; }
+.d-label { fill: var(--ink-2); font-family: var(--font-sans); font-size: 11.5px; }
+.d-label-hot { fill: var(--accent); font-family: var(--font-sans); font-size: 11.5px; font-weight: 600; }
+.d-cap { fill: var(--muted); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+.d-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+.d-line-hot { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+.d-line-dash { stroke: var(--muted); stroke-width: 1.3; fill: none; stroke-dasharray: 4 4; }
+.d-head { fill: var(--muted); }
+.d-head-hot { fill: var(--accent); }
+.d-axis { stroke: var(--line-strong); stroke-width: 1; }
+
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.grid-2.pairs { grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.card h3 { font-size: var(--step-0); }
+.card p, .card li { color: var(--ink-2); font-size: 0.9375rem; }
+.card pre { margin: 0; font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.6; color: var(--ink-2); overflow-x: auto; }
+.tag { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9375rem; min-width: 680px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: var(--step--1); text-transform: uppercase; letter-spacing: 0.05em; background: var(--surface-2); }
+tr:last-child td { border-bottom: 0; }
+td { color: var(--ink-2); }
+td strong { color: var(--ink); }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip { display: inline-block; font-family: var(--font-mono); font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.easy { color: var(--positive); background: var(--positive-soft); }
+.chip.medium { color: var(--info); background: var(--info-soft); }
+.chip.hard { color: var(--accent); background: var(--accent-soft); }
+.starters { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 var(--radius) var(--radius) 0; color: var(--ink); }
+.callout.ok { border-color: var(--positive); background: var(--positive-soft); }
+.example { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; display: grid; gap: 8px; }
+.example p { color: var(--ink-2); }
+.example b { color: var(--ink); }
+.example .no { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--accent); }
+
+.phases { display: grid; gap: 10px; }
+.phase { display: grid; grid-template-columns: 56px 1fr; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.phase.now { border-color: var(--accent); }
+.phase .n { font-family: var(--font-mono); font-size: var(--step-2); color: var(--accent); line-height: 1; }
+.phase .body { display: grid; gap: 6px; min-width: 0; }
+.phase .head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.phase p { color: var(--ink-2); }
+.phase .done { color: var(--positive); font-size: 0.9375rem; }
+
+details { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
+details summary { cursor: pointer; font-weight: 600; }
+details[open] summary { margin-bottom: 10px; }
+details ol { gap: 4px; }
+details h4 { margin: 12px 0 6px; font-size: 0.9375rem; color: var(--muted); }
+.sources { font-size: var(--step--1); color: var(--muted); }
+.sources ul { gap: 2px; }
+
+@media (max-width: 560px) {
+  h1 { font-size: 1.85rem; }
+  .phase { grid-template-columns: 1fr; gap: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+
+<div class="page">
+
+<header class="top">
+  <div class="eyebrow">Design · revision 5 · 8 November 2026</div>
+  <h1>YashOS Assistant</h1>
+  <p class="lede col">A text and voice assistant that tells recruiters about Yash and makes the case for hiring Yash. It is built as its own small project with a test page, then added to YashOS as an app. Its architecture is part of the pitch: small, measured and easy to change.</p>
+  <div class="status">
+    <span class="pill">Phase 0 measured</span>
+    <span class="pill accent">Phase 1 built, in testing</span>
+    <span class="pill">Two independent reviews applied</span>
+    <span class="pill">Draft for Yash's review</span>
+  </div>
+  <div class="glance" aria-label="The system at a glance">
+    <div><b>1</b><span>Cloudflare Worker</span></div>
+    <div><b>1</b><span>Durable Object class, one object per conversation</span></div>
+    <div><b>3</b><span>endpoints</span></div>
+    <div><b>2</b><span>AI vendors in production</span></div>
+    <div><b>1</b><span>database</span></div>
+    <div><b>1</b><span>language, TypeScript</span></div>
+    <div><b>1.6 s</b><span>to the first answer word, p50, measured from India; voice target ≤1.5 s to first sound</span></div>
+  </div>
+  <nav class="toc" aria-label="Sections">
+    <a href="#what">What it does</a>
+    <a href="#how">How it fits together</a>
+    <a href="#turn">One voice turn</a>
+    <a href="#why">Why these parts</a>
+    <a href="#modular">Swappable parts</a>
+    <a href="#brain">The brain</a>
+    <a href="#grow">Built to grow</a>
+    <a href="#talk">How it talks</a>
+    <a href="#safety">Safety and cost</a>
+    <a href="#quality">Quality tests</a>
+    <a href="#languages">Languages</a>
+    <a href="#yashos">In YashOS</a>
+    <a href="#review">Review findings</a>
+    <a href="#roadmap">Roadmap</a>
+    <a href="#cost">Cost</a>
+    <a href="#questions">Open questions</a>
+  </nav>
+</header>
+
+<section id="what">
+  <h2>What it does</h2>
+  <p class="col">Two audiences open it. A recruiter wants quick, specific answers and a way to reach Yash. An engineer wants to see how it was built. Text comes first, because most recruiters are on a phone or in an open office and will type. Voice is one tap away on the Talk button.</p>
+  <div class="example col">
+    <p><b>Assistant:</b> Hi, I'm Yash's AI assistant. I can tell you about Yash's AI work and time at Amazon, or check the fit for a role you're hiring for.</p>
+    <div class="starters" aria-label="Starter questions">
+      <span class="pill">What has Yash built with AI?</span>
+      <span class="pill">What did Yash do at Amazon?</span>
+      <span class="pill">Check the fit for my role</span>
+      <span class="pill">How were you built?</span>
+    </div>
+    <p class="muted">Fixed text with no model call, so it appears instantly. Each starter is also a test case.</p>
+  </div>
+  <div class="grid-2">
+    <div class="card"><span class="tag">for recruiters</span><h3>Answers questions about Yash</h3><p>Experience, projects, skills, education, availability, location and working style. Every answer lists its sources and has a copy button.</p></div>
+    <div class="card"><span class="tag">for recruiters</span><h3>Checks the fit for a role</h3><p>Paste a job description. A one-sentence verdict streams first, then a fit card: each requirement with its evidence and source. Weaker matches say "Closest:", and missing requirements are never listed. Voice reads only the verdict and top two rows.</p></div>
+    <div class="card"><span class="tag">for recruiters</span><h3>Hands over to Yash with context</h3><p>Messages opens with a draft note naming the role and what was discussed. A template writes it, not the model, and it is never sent automatically. Contact details never pass through the AI.</p></div>
+    <div class="card"><span class="tag">in YashOS</span><h3>Shows it on screen</h3><p>While talking about Amazon, it offers a chip that opens the Time Machine at Amazon. Projects open the project, and the resume is one tap.</p></div>
+    <div class="card"><span class="tag">for engineers</span><h3>Says how it was built</h3><p>"How were you built?" gets an open answer. Under the hood shows each answer's timings, model, tokens, cost and sources, and links the public repo.</p></div>
+    <div class="card"><span class="tag">for Yash</span><h3>Learns what's missing</h3><p>Questions it could only partly answer are logged. Each answer Yash adds becomes a new test, so the assistant improves without slipping back.</p></div>
+  </div>
+</section>
+
+<section id="how">
+  <h2>How it fits together</h2>
+  <p class="col">Everything runs in one Cloudflare Worker, served from the portfolio's own address. The Worker is a thin front door. Each conversation lives in its own Durable Object: a small server-side object with its own SQLite storage, found by name. The client sends only the new message.</p>
+  <div class="callout col"><b>Why it is no longer stateless.</b> Revision 3 kept the conversation in the browser so the Worker held nothing. That took three workarounds: signed history, which could still be spliced or replayed; voice counters per socket, which reset on reconnect; and a hop back through the browser at the end of every spoken turn (80 to 150 ms on Indian mobile networks). Exact limits need state anyway. One object per conversation removes all three: less code and fewer ways to attack it.</div>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1040 560" role="img" aria-label="The browser's assistant client talks to three endpoints in one Cloudflare Worker at yashos.dev/assistant: /session when the app opens, /chat for text turns streamed back, and /voice for a live audio socket. /session creates a Conversation Durable Object, one per conversation, holding the history, exact session counters, the brain and, in voice mode, the Flux relay and the TTS sender. The brain calls MiniMax for text, the relay streams audio to Flux speech-to-text, and the TTS sender sends checked sentences to MiniMax voice. The object updates daily counters and writes a turn log to D1. Contact hands over to the existing Messages app with a draft note.">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+          <marker id="a1h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="d-head-hot"/></marker>
+        </defs>
+        <rect x="20" y="40" width="210" height="500" rx="14" class="d-group"/>
+        <text x="125" y="30" text-anchor="middle" class="d-cap">Browser</text>
+        <rect x="36" y="70" width="178" height="300" rx="10" class="d-box"/>
+        <text x="125" y="196" text-anchor="middle" class="d-t">assistant client</text>
+        <text x="125" y="216" text-anchor="middle" class="d-m">AssistantSession</text>
+        <text x="125" y="238" text-anchor="middle" class="d-s">text box, Talk button,</text>
+        <text x="125" y="254" text-anchor="middle" class="d-s">mic and speaker</text>
+        <text x="125" y="334" text-anchor="middle" class="d-s">used by the YashOS app,</text>
+        <text x="125" y="350" text-anchor="middle" class="d-s">test page and terminal</text>
+        <rect x="36" y="470" width="178" height="56" rx="10" class="d-box"/>
+        <text x="125" y="494" text-anchor="middle" class="d-t">YashOS Messages</text>
+        <text x="125" y="512" text-anchor="middle" class="d-s">draft note → Yash's email</text>
+        <line x1="125" y1="371" x2="125" y2="467" class="d-line-dash" marker-end="url(#a1)"/>
+        <text x="133" y="414" class="d-label">hand-over with</text>
+        <text x="133" y="430" class="d-label">a draft note</text>
+
+        <rect x="340" y="40" width="232" height="330" rx="14" class="d-group"/>
+        <text x="456" y="30" text-anchor="middle" class="d-cap">Worker · yashos.dev/assistant/*</text>
+        <rect x="356" y="70" width="200" height="70" rx="8" class="d-box"/>
+        <text x="372" y="94" class="d-m">POST /session</text>
+        <text x="372" y="113" class="d-s">Turnstile, per-IP limit</text>
+        <text x="372" y="130" class="d-s">→ token, version, mode</text>
+        <rect x="356" y="170" width="200" height="60" rx="8" class="d-box-hot"/>
+        <text x="372" y="194" class="d-m">POST /chat</text>
+        <text x="372" y="214" class="d-s">text turn, streamed back (SSE)</text>
+        <rect x="356" y="260" width="200" height="60" rx="8" class="d-box"/>
+        <text x="372" y="284" class="d-m">WS /voice</text>
+        <text x="372" y="304" class="d-s">token checked before upgrade</text>
+
+        <line x1="217" y1="105" x2="353" y2="105" class="d-line" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text x="285" y="97" text-anchor="middle" class="d-label">on open ⇄ token</text>
+        <line x1="217" y1="200" x2="353" y2="200" class="d-line-hot" marker-start="url(#a1h)" marker-end="url(#a1h)"/>
+        <text x="285" y="192" text-anchor="middle" class="d-label-hot">message ⇄ stream</text>
+        <line x1="217" y1="290" x2="353" y2="290" class="d-line" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text x="285" y="282" text-anchor="middle" class="d-label">audio ⇄ events, audio</text>
+
+        <line x1="558" y1="105" x2="637" y2="105" class="d-line" marker-end="url(#a1)"/>
+        <text x="598" y="97" text-anchor="middle" class="d-label">creates</text>
+        <line x1="558" y1="190" x2="653" y2="190" class="d-line-hot" marker-end="url(#a1h)"/>
+        <text x="598" y="182" text-anchor="middle" class="d-label-hot">turn</text>
+        <line x1="558" y1="290" x2="637" y2="290" class="d-line" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text x="598" y="282" text-anchor="middle" class="d-label">socket</text>
+
+        <rect x="640" y="40" width="380" height="360" rx="14" class="d-group"/>
+        <text x="830" y="30" text-anchor="middle" class="d-cap">Conversation · one Durable Object each</text>
+        <rect x="656" y="60" width="166" height="52" rx="8" class="d-box"/>
+        <text x="672" y="82" class="d-t">history</text>
+        <text x="672" y="100" class="d-s">SQLite, last 20 messages</text>
+        <rect x="838" y="60" width="166" height="52" rx="8" class="d-box"/>
+        <text x="854" y="82" class="d-t">session counters</text>
+        <text x="854" y="100" class="d-s">turns, audio, characters</text>
+        <rect x="656" y="140" width="348" height="68" rx="8" class="d-box-hot"/>
+        <text x="672" y="164" class="d-t">brain</text>
+        <text x="672" y="183" class="d-s">prompt builder · data-line parser · refs</text>
+        <text x="672" y="199" class="d-s">sentence splitter · output gate</text>
+        <rect x="656" y="248" width="88" height="56" rx="8" class="d-box"/>
+        <text x="700" y="271" text-anchor="middle" class="d-t">Flux relay</text>
+        <text x="700" y="289" text-anchor="middle" class="d-s">voice only</text>
+        <rect x="916" y="248" width="88" height="56" rx="8" class="d-box"/>
+        <text x="960" y="271" text-anchor="middle" class="d-t">TTS sender</text>
+        <text x="960" y="289" text-anchor="middle" class="d-s">voice only</text>
+        <line x1="700" y1="247" x2="700" y2="211" class="d-line" marker-end="url(#a1)"/>
+        <text x="708" y="233" class="d-label">turn end</text>
+        <line x1="960" y1="209" x2="960" y2="245" class="d-line" marker-end="url(#a1)"/>
+        <text x="952" y="233" text-anchor="end" class="d-label">checked sentences</text>
+
+        <rect x="640" y="450" width="120" height="56" rx="8" class="d-box-info"/>
+        <text x="652" y="473" class="d-t">Speech-to-text</text>
+        <text x="652" y="491" class="d-s">Flux, Workers AI</text>
+        <rect x="770" y="450" width="120" height="56" rx="8" class="d-box-info"/>
+        <text x="782" y="473" class="d-t">Language model</text>
+        <text x="782" y="491" class="d-s">MiniMax</text>
+        <rect x="900" y="450" width="120" height="56" rx="8" class="d-box-info"/>
+        <text x="912" y="473" class="d-t">Voice</text>
+        <text x="912" y="491" class="d-s">MiniMax Speech</text>
+        <text x="830" y="530" text-anchor="middle" class="d-cap">outside services</text>
+        <line x1="700" y1="307" x2="700" y2="447" class="d-line" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text x="708" y="420" class="d-label">frames ⇄ words</text>
+        <line x1="830" y1="211" x2="830" y2="447" class="d-line-hot" marker-start="url(#a1h)" marker-end="url(#a1h)"/>
+        <text x="838" y="440" class="d-label-hot">prompt ⇄ text</text>
+        <line x1="960" y1="307" x2="960" y2="447" class="d-line" marker-start="url(#a1)" marker-end="url(#a1)"/>
+        <text x="952" y="420" text-anchor="end" class="d-label">text ⇄ audio</text>
+
+        <rect x="380" y="440" width="160" height="56" rx="8" class="d-box-ok"/>
+        <text x="460" y="463" text-anchor="middle" class="d-t">D1 database</text>
+        <text x="460" y="481" text-anchor="middle" class="d-s">daily counters · turn log</text>
+        <path d="M639,385 H460 V437" class="d-line-dash" marker-end="url(#a1)"/>
+        <text x="470" y="404" class="d-label">one counter update per turn,</text>
+        <text x="470" y="420" class="d-label">turn log after the reply</text>
+      </svg>
+    </div>
+    <figcaption>The whole system. Orange is the path every answer takes through the conversation's own object. In voice mode the object also holds the socket, so a spoken turn never returns to the browser. Blue boxes are outside services, each behind a port with a fake. D1's daily counter is updated alongside the model call; the turn log is written after the reply.</figcaption>
+  </figure>
+  <div class="grid-2 pairs">
+    <div class="card"><span class="tag mono">POST /session</span><p>Runs when the app opens: an invisible Turnstile check and a per-IP rate limit. It creates the conversation under a random id and returns a short-lived token, the <code>PROTOCOL_VERSION</code> and the mode: voice, text only or resting.</p></div>
+    <div class="card"><span class="tag mono">POST /chat</span><p>One text turn, handed to the conversation's object, which streams back text, refs and events as SSE (server-sent events: one HTTP response that stays open and delivers events as they happen).</p></div>
+    <div class="card"><span class="tag mono">WS /voice</span><p>Audio up; events and audio down. The token is checked before the upgrade, in the <code>Sec-WebSocket-Protocol</code> header, and the Worker answers with a fixed protocol name, so no secret ends up in a URL or a log.</p></div>
+    <div class="card"><span class="tag">same origin</span><p>A Cloudflare route sends <code>yashos.dev/assistant/*</code> to this Worker, ahead of the portfolio's custom domain. No cross-origin checks, and the existing Turnstile setup works as it is.</p></div>
+  </div>
+</section>
+
+<section id="turn">
+  <h2>One voice turn</h2>
+  <ol class="col">
+    <li>The visitor taps Talk. The client streams 80 ms frames of 16 kHz audio over <code>/voice</code>, and the conversation's object relays them to Flux.</li>
+    <li>Flux sends live words for the captions and decides when the visitor has finished, so there is no silence detector to build or tune. Names from the knowledge bundle are given to it as key terms at build time.</li>
+    <li>At turn end the object builds the prompt and streams from the model straight away. It opens the voice socket at the same moment, so the voice is ready when the first clause of six or more words is.</li>
+    <li>Each sentence that passes the output gate goes to the voice as its own message; when its audio ends with a message marked final, the next one goes. Synthesis is faster than playback, so there is no audible gap. Text and audio share a sentence id, so captions match the voice.</li>
+    <li>While the assistant speaks, the mic sends silence. After playback, the mic stays open about 8 seconds for a follow-up, then closes until tapped.</li>
+  </ol>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 250" role="img" aria-label="Latency budget drawn to scale, as targets: Flux decides the turn ended in 350 milliseconds, the request to MiniMax takes 50, the model's reasoning 650, the first clause 150, the voice's first audio 250 and the playback buffer 50, for 1.5 seconds in total. The voice socket opens in parallel while the model thinks, and there is no hop back to the browser. The measured row stays empty until Phase 0 runs from India and the US.">
+        <text x="20" y="66" class="d-cap">target</text>
+        <text x="20" y="158" class="d-cap">measured</text>
+        <rect x="110" y="40" width="196" height="44" rx="4" class="d-box-info"/>
+        <text x="208" y="59" text-anchor="middle" class="d-t">turn end</text>
+        <text x="208" y="76" text-anchor="middle" class="d-s">Flux · 350 ms</text>
+        <rect x="306" y="40" width="28" height="44" class="d-box"/>
+        <text x="320" y="32" text-anchor="middle" class="d-label">request 50</text>
+        <rect x="334" y="40" width="364" height="44" class="d-box-hot"/>
+        <text x="516" y="59" text-anchor="middle" class="d-t">model reasoning</text>
+        <text x="516" y="76" text-anchor="middle" class="d-s">effort low or thinking off · 650 ms · biggest unknown</text>
+        <rect x="698" y="40" width="84" height="44" class="d-box"/>
+        <text x="740" y="59" text-anchor="middle" class="d-t">clause</text>
+        <text x="740" y="76" text-anchor="middle" class="d-s">150</text>
+        <rect x="782" y="40" width="140" height="44" class="d-box-info"/>
+        <text x="852" y="59" text-anchor="middle" class="d-t">first audio</text>
+        <text x="852" y="76" text-anchor="middle" class="d-s">voice · 250 ms</text>
+        <rect x="922" y="40" width="28" height="44" rx="4" class="d-box"/>
+        <text x="944" y="32" text-anchor="end" class="d-label">buffer 50</text>
+        <text x="944" y="16" text-anchor="end" class="d-label-hot">p50 target · 1.5 s</text>
+        <text x="110" y="113" class="d-s">no hop back to the browser</text>
+        <rect x="306" y="98" width="168" height="22" rx="4" class="d-box-info"/>
+        <text x="390" y="113" text-anchor="middle" class="d-label">voice socket opens</text>
+        <text x="486" y="113" class="d-s">in parallel, ready long before the first clause</text>
+        <rect x="110" y="136" width="840" height="36" rx="4" class="d-group"/>
+        <text x="530" y="158" text-anchor="middle" class="d-s">measured p50: filled in by Phase 0, from India and the US</text>
+        <line x1="950" y1="24" x2="950" y2="180" class="d-line-hot" stroke-dasharray="4 4"/>
+        <line x1="110" y1="196" x2="950" y2="196" class="d-axis"/>
+        <line x1="110" y1="192" x2="110" y2="200" class="d-axis"/><text x="110" y="214" text-anchor="middle" class="d-m">0</text>
+        <line x1="250" y1="192" x2="250" y2="200" class="d-axis"/><text x="250" y="214" text-anchor="middle" class="d-m">250</text>
+        <line x1="390" y1="192" x2="390" y2="200" class="d-axis"/><text x="390" y="214" text-anchor="middle" class="d-m">500</text>
+        <line x1="530" y1="192" x2="530" y2="200" class="d-axis"/><text x="530" y="214" text-anchor="middle" class="d-m">750</text>
+        <line x1="670" y1="192" x2="670" y2="200" class="d-axis"/><text x="670" y="214" text-anchor="middle" class="d-m">1000</text>
+        <line x1="810" y1="192" x2="810" y2="200" class="d-axis"/><text x="810" y="214" text-anchor="middle" class="d-m">1250</text>
+        <line x1="950" y1="192" x2="950" y2="200" class="d-axis"/><text x="950" y="214" text-anchor="middle" class="d-m">1500 ms</text>
+        <text x="110" y="238" class="d-s">visitor stops talking</text>
+        <text x="950" y="238" text-anchor="end" class="d-s">first sound of the reply</text>
+      </svg>
+    </div>
+    <figcaption>From the end of the visitor's speech to the first sound of the reply, drawn to scale. These are targets; the measured row stays empty until Phase 0 runs. Request plus reasoning is the 700 ms gate that picks the voice model. The voice socket opens while the model thinks, so it adds nothing. Starting the model early on Flux's "probably finished" signal is put off: Phase 0 only logs how far that signal runs ahead.</figcaption>
+  </figure>
+
+  <h3>Half-duplex: one side talks at a time</h3>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 220" role="img" aria-label="The assistant plays sentences one and two in full and is part way through sentence three. During playback the mic sends silence, zeroed audio frames that keep the speech-to-text socket open. The visitor taps, or presses Space or Escape: playback stops, the model and voice stop, and the client reports sentence two as the last one heard, so the history is trimmed to it. The mic then opens for a listening window of about eight seconds, then closes until tapped.">
+        <text x="20" y="66" class="d-cap">assistant</text>
+        <text x="20" y="136" class="d-cap">mic sends</text>
+        <rect x="120" y="44" width="170" height="34" rx="6" class="d-box-ok"/>
+        <text x="205" y="66" text-anchor="middle" class="d-label">sentence 1 · heard</text>
+        <rect x="296" y="44" width="170" height="34" rx="6" class="d-box-ok"/>
+        <text x="381" y="66" text-anchor="middle" class="d-label">sentence 2 · heard</text>
+        <rect x="472" y="44" width="88" height="34" rx="6" class="d-box"/>
+        <text x="516" y="66" text-anchor="middle" class="d-label">sentence 3</text>
+        <rect x="560" y="44" width="80" height="34" rx="6" class="d-group"/>
+        <text x="600" y="66" text-anchor="middle" class="d-s">dropped</text>
+        <text x="660" y="58" class="d-s">history trimmed to</text>
+        <text x="660" y="74" class="d-s">sentence 2, the last heard</text>
+        <rect x="120" y="114" width="440" height="34" rx="6" class="d-group"/>
+        <text x="340" y="136" text-anchor="middle" class="d-label">silence: zeroed frames keep Flux open</text>
+        <rect x="580" y="114" width="300" height="34" rx="6" class="d-box-info"/>
+        <text x="730" y="136" text-anchor="middle" class="d-label">listening window · about 8 s</text>
+        <text x="890" y="128" class="d-s">then closed</text>
+        <text x="890" y="144" class="d-s">until tapped</text>
+        <line x1="560" y1="28" x2="560" y2="168" class="d-line-hot"/>
+        <text x="566" y="188" class="d-label-hot">tap, Space or Esc: playback stops,</text>
+        <text x="566" y="204" class="d-label-hot">model and voice stop, client reports 2</text>
+      </svg>
+    </div>
+    <figcaption>Not to scale. The mic sends silence rather than nothing, because Flux closes a socket that gets no audio; the silent frames are billed, but negligibly. The mic can't hear the assistant, so its own voice can never interrupt it. The real mic returns 150 to 200 ms after playback ends. Talking over the assistant comes back only if more than 10% of voice turns are tapped mid-answer and a speakers-on Chrome test passes.</figcaption>
+  </figure>
+  <div class="grid-2">
+    <div class="card"><h3>Audio in the browser</h3><p>One AudioContext at the device's rate, created on the Talk tap since browsers start audio only after a tap. An AudioWorklet (a small audio script from the same site) downsamples to 16 kHz in 80 ms frames. The mic asks for <code>echoCancellation: "all"</code> on Chromium, <code>true</code> elsewhere; 300 ms of trailing audio follows a push-to-talk release.</p></div>
+    <div class="card"><h3>The relay</h3><p>The object pumps frames to Flux in its own code rather than passing the socket through, so it can count audio from bytes (32,000 is one second) and refuse audio faster than real time. It sets <code>binaryType = "arraybuffer"</code> before accepting. Deploys and hidden iPhone tabs drop sockets, so the client reconnects.</p></div>
+  </div>
+</section>
+
+<section id="why">
+  <h2>Why these parts</h2>
+  <p class="col">Each choice has a reason and a known point at which it would change. Nothing is added before it earns its place, and anything left out has a trigger for when it comes in.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Part</th><th>We use</th><th>Why</th><th>We'd change it when</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Hosting</strong></td><td>Cloudflare Workers</td><td>Same platform as YashOS. Runs close to the visitor, costs nothing when idle, and already provides the bot check, rate limits and database that Messages uses.</td><td>Unlikely to change.</td></tr>
+        <tr><td><strong>Shape</strong></td><td>One Worker, three endpoints and one Durable Object per conversation</td><td>Revision 3 was stateless and needed three workarounds to stay so (see How it fits together). One object holds history, exact limits and the voice loop, so all three go.</td><td>The hop from India to the object proves large: add a location hint.</td></tr>
+        <tr><td><strong>Voice plumbing</strong></td><td>Our own small turn loop, not Cloudflare's agents/voice</td><td>agents/voice is in beta, interrupts on mic volume, has no MiniMax voice, and would own the loop that holds our gate and refs. Our ports copy its interface shapes.</td><td>It leaves beta: revisit by wrapping our adapters.</td></tr>
+        <tr><td><strong>Speech-to-text</strong></td><td>Deepgram Flux on Workers AI</td><td>Made for voice agents and decides when a turn ends by itself. No extra account, keeps no data, $0.0077 per audio minute.</td><td>Hindi is needed, or something faster or cheaper appears.</td></tr>
+        <tr><td><strong>Language model</strong></td><td>MiniMax, the exact model picked in Phase 0 by a rule written in advance</td><td>Yash has a key and it's cheap. The rule is in The brain; text and voice may use different models.</td><td>The scorecard shows a better model.</td></tr>
+        <tr><td><strong>Voice</strong></td><td>MiniMax <code>speech-2.8-turbo</code>, one plain streaming socket per reply, a stock voice</td><td>Same vendor and key. Each sentence's audio ends with a final marker, so audio maps to sentence ids exactly. Never a clone: a cloned voice making a mistake sounds like Yash saying it.</td><td>Another voice sounds better or costs less.</td></tr>
+        <tr><td><strong>Knowledge</strong></td><td>The whole knowledge base at the front of the prompt</td><td>About 20K tokens, cached automatically, about $0.0003 a turn. The model sees every story at once. Decision record in The brain.</td><td>It passes 60K tokens, or tests show missed facts.</td></tr>
+        <tr><td><strong>Reply format</strong></td><td>Prose, then one checked data line</td><td>Prose first, so the voice starts sooner. MiniMax has no JSON mode and ignores stop sequences, so a validated text line is the dependable option.</td><td>A feature needs a result back: render the same schema as a tool.</td></tr>
+        <tr><td><strong>Contact</strong></td><td>YashOS Messages, with a draft note</td><td>It already has a bot check, rate limits and email to Yash. A second path would be more to secure.</td><td>The assistant is embedded somewhere without Messages.</td></tr>
+        <tr><td><strong>Storage</strong></td><td>Cloudflare D1</td><td>Daily ceilings need one shared, exact counter. The report needs tables it can list; Durable Objects can't be listed.</td><td>Unlikely at this traffic.</td></tr>
+        <tr><td><strong>Test judge</strong></td><td>A model from another family, tested on planted defects</td><td>Models grade their own family kindly, and a judge that never flags would look perfect.</td><td>No reason to change.</td></tr>
+        <tr><td><strong>Code</strong></td><td>TypeScript, one package; a framework-free client core with a React hook on top</td><td>One language and toolchain, the same as YashOS. Folders are the boundaries, enforced by lint.</td><td>YashOS needs the client on its own release cycle: publish a package.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="modular">
+  <h2>Swappable parts</h2>
+  <p class="col">The core never talks to a vendor directly. Three outside services sit behind ports: small interfaces, each with a real adapter and a scripted fake. The fakes run the tests and a demo mode that needs no keys. Two more contracts are ours and fixed: the event protocol every surface reads, and the knowledge bundle.</p>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 410" role="img" aria-label="The assistant core sits in the middle and contains no vendor code. On the right, three ports connect it to outside services: a language model port named stream, now MiniMax; a speech-to-text port named Transcriber, now Flux on Workers AI; and a voice port named StreamingTTS, now MiniMax speech-2.8-turbo. Each also has a fake for tests. On the left, the core emits events in one versioned protocol that every surface reads, and loads one knowledge bundle built from content.json, stories and policies.">
+        <defs>
+          <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+        </defs>
+        <rect x="30" y="30" width="250" height="120" rx="10" class="d-box"/>
+        <text x="48" y="58" class="d-t">Event protocol</text>
+        <text x="48" y="78" class="d-m">src/protocol</text>
+        <text x="48" y="98" class="d-s">PROTOCOL_VERSION, additive changes</text>
+        <text x="48" y="116" class="d-s">read by YashOS, the test page,</text>
+        <text x="48" y="134" class="d-s">the terminal and the tests</text>
+        <rect x="30" y="250" width="250" height="120" rx="10" class="d-box"/>
+        <text x="48" y="278" class="d-t">Knowledge bundle</text>
+        <text x="48" y="298" class="d-m">content.json + markdown</text>
+        <text x="48" y="318" class="d-s">stories and policies with refs</text>
+        <text x="48" y="336" class="d-s">token count printed; fails at 60K</text>
+        <line x1="379" y1="90" x2="283" y2="90" class="d-line" marker-end="url(#a5)"/>
+        <text x="330" y="82" text-anchor="middle" class="d-label">events out</text>
+        <line x1="281" y1="310" x2="377" y2="310" class="d-line" marker-end="url(#a5)"/>
+        <text x="330" y="302" text-anchor="middle" class="d-label">loaded at build</text>
+
+        <rect x="380" y="30" width="240" height="340" rx="12" class="d-box-hot"/>
+        <text x="500" y="150" text-anchor="middle" class="d-m">src/core</text>
+        <text x="500" y="172" text-anchor="middle" class="d-t">Assistant core</text>
+        <text x="500" y="196" text-anchor="middle" class="d-s">prompt builder · parser</text>
+        <text x="500" y="214" text-anchor="middle" class="d-s">sentence splitter · gate</text>
+        <text x="500" y="232" text-anchor="middle" class="d-s">typed refs · rules</text>
+        <text x="500" y="262" text-anchor="middle" class="d-m">no vendor code</text>
+
+        <rect x="720" y="30" width="250" height="70" rx="10" class="d-box-info"/>
+        <text x="738" y="56" class="d-t">Language model</text>
+        <text x="738" y="74" class="d-s">now: MiniMax, Flash or M3</text>
+        <text x="738" y="90" class="d-s">fake for tests · later: Claude</text>
+        <rect x="720" y="165" width="250" height="70" rx="10" class="d-box-info"/>
+        <text x="738" y="191" class="d-t">Speech-to-text</text>
+        <text x="738" y="209" class="d-s">now: Flux on Workers AI</text>
+        <text x="738" y="225" class="d-s">fake · later: Deepgram for Hindi</text>
+        <rect x="720" y="300" width="250" height="70" rx="10" class="d-box-info"/>
+        <text x="738" y="326" class="d-t">Voice</text>
+        <text x="738" y="344" class="d-s">now: MiniMax speech-2.8-turbo</text>
+        <text x="738" y="360" class="d-s">fake · later: any streaming voice</text>
+        <line x1="620" y1="65" x2="720" y2="65" class="d-line"/>
+        <text x="670" y="58" text-anchor="middle" class="d-m">stream()</text>
+        <line x1="620" y1="200" x2="720" y2="200" class="d-line"/>
+        <text x="670" y="193" text-anchor="middle" class="d-m">Transcriber</text>
+        <line x1="620" y1="335" x2="720" y2="335" class="d-line"/>
+        <text x="670" y="328" text-anchor="middle" class="d-m">StreamingTTS</text>
+        <text x="500" y="396" text-anchor="middle" class="d-label-hot">swap = change one setting, then run the scorecard</text>
+      </svg>
+    </div>
+    <figcaption>Blue boxes are outside vendors behind ports; grey boxes are our own contracts. Revision 3 drew six swappable parts, but storage, channels and knowledge had nothing to swap, so those interfaces are gone. The ports are shaped like the interfaces in Cloudflare's agents/voice, so adopting it later is cheap.</figcaption>
+  </figure>
+  <div class="card"><h3>Folders and import rules</h3>
+<pre>src/protocol  events, refs, data-line schema, TurnRecord, PROTOCOL_VERSION
+src/core      prompt, parser, gate, rules
+src/ports     llm, stt, tts
+src/adapters  minimax, flux, fakes
+src/worker    endpoints, Conversation object
+src/client    AssistantSession: state, ask, startVoice, stopVoice, interrupt, on</pre>
+    <p><code>src/protocol</code> imports nothing. Lint blocks the core from importing adapters or the worker, and the client from importing the core, which keeps the prompt and knowledge out of the browser bundle. CI typechecks the client with DOM types and the worker with Workers types. YashOS binds only to <code>AssistantSession</code>. A client on an older major <code>PROTOCOL_VERSION</code> shows "reload to update"; minor changes only add fields. How YashOS installs the client is decided at integration.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Part</th><th>Swap effort</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Language model</strong></td><td><span class="chip easy">easy</span></td><td>Neutral turns in, text and usage out. Each provider's quirks are constants in its own adapter.</td></tr>
+        <tr><td><strong>Voice</strong></td><td><span class="chip easy">easy</span></td><td>The Worker owns sentence ids, so any streaming voice fits.</td></tr>
+        <tr><td><strong>Speech-to-text</strong></td><td><span class="chip medium">medium</span></td><td>The design relies on the provider detecting the end of a turn; one that doesn't would need a turn-detection step.</td></tr>
+        <tr><td><strong>Actions</strong></td><td><span class="chip medium">medium</span></td><td>A data line today; zod's <code>toJSONSchema</code> turns the same schema into a tool when a tool-calling path exists.</td></tr>
+        <tr><td><strong>Transport</strong></td><td><span class="chip hard">hard</span></td><td>WebRTC or speech-to-speech would replace <code>/voice</code> and the turn loop, but could reuse the knowledge, gate and refs.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="example">
+    <p class="mono">LLM_PROVIDER=minimax &nbsp; LLM_MODEL_TEXT=MiniMax-M3.1-Flash &nbsp; LLM_MODEL_VOICE=&lt;Phase 0 pick&gt; &nbsp; LLM_EFFORT=low<br>STT_PROVIDER=flux &nbsp; TTS_PROVIDER=minimax &nbsp; TTS_MODEL=speech-2.8-turbo &nbsp; LANGUAGE=en &nbsp; ASSISTANT_MODE=voice</p>
+    <p>Changing the model is one line here, then <code>npm run eval -- --model=&lt;new&gt;</code> prints a scorecard to compare with the current one.</p>
+  </div>
+</section>
+
+<section id="brain">
+  <h2>The brain</h2>
+  <p class="col">The prompt is built in layers, with the parts that never change first. MiniMax caches a stable prefix of 512 tokens or more automatically and reads it back at a tenth of the price. How long the cache lasts isn't documented, so Phase 0 measures it; warming it at <code>/session</code> stays only if that matters.</p>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 290" role="img" aria-label="The prompt has four layers. Rules and persona, then the knowledge bundle of about twenty thousand tokens, form a stable prefix that MiniMax caches automatically. The conversation so far, held by the conversation's object, and the per-turn tail with the new message, style and reply language change every turn.">
+        <rect x="40" y="30" width="560" height="40" rx="6" class="d-box"/>
+        <text x="58" y="55" class="d-t">Rules and persona</text>
+        <text x="582" y="55" text-anchor="end" class="d-m">≈1.5K tokens</text>
+        <rect x="40" y="76" width="560" height="104" rx="6" class="d-box-ok"/>
+        <text x="58" y="104" class="d-t">Knowledge bundle</text>
+        <text x="58" y="124" class="d-s">roles, projects, skills, stories, policies, anchored facts,</text>
+        <text x="58" y="140" class="d-s">each section with a typed ref such as role:magenta or story:incident</text>
+        <text x="582" y="104" text-anchor="end" class="d-m">≈20K tokens</text>
+        <rect x="40" y="186" width="560" height="44" rx="6" class="d-box"/>
+        <text x="58" y="213" class="d-t">Conversation so far, held by the object</text>
+        <text x="582" y="213" text-anchor="end" class="d-m">≤20 messages</text>
+        <rect x="40" y="236" width="560" height="34" rx="6" class="d-box-hot"/>
+        <text x="58" y="258" class="d-t">New message + voice or text style + reply language</text>
+        <path d="M620,30 h14 v150 h-14" class="d-line"/>
+        <text x="650" y="96" class="d-label">Stable prefix</text>
+        <text x="650" y="114" class="d-s">cached automatically by MiniMax</text>
+        <text x="650" y="130" class="d-s">a test checks it never changes by a byte</text>
+        <path d="M620,186 h14 v84 h-14" class="d-line"/>
+        <text x="650" y="224" class="d-label">Changes every turn</text>
+        <text x="650" y="242" class="d-s">no timestamps or ids above this line</text>
+      </svg>
+    </div>
+    <figcaption>Token counts are estimates until Yash's long-form stories are written. The cached prefix can't carry today's date, so facts are anchored to a start year rather than a count of years. Every logged answer records the hash of the prompt and the knowledge it saw.</figcaption>
+  </figure>
+
+  <h3>Why no retrieval (RAG)</h3>
+  <p class="col">RAG means searching the knowledge for a few relevant pieces and putting only those into the prompt. This decision record explains why the whole bundle goes in instead.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+      <tbody>
+        <tr><td><strong>How big is it?</strong></td><td>About 20K tokens; <code>lib/content</code> is 19 KB today. CI prints the count on every build.</td></tr>
+        <tr><td><strong>What does it cost?</strong></td><td>About $0.0003 a turn: 20K cached tokens at Flash's $0.015 per million.</td></tr>
+        <tr><td><strong>Is that normal?</strong></td><td>Anthropic's guidance: a knowledge base under about 200K tokens can go into the prompt whole.</td></tr>
+        <tr><td><strong>What would RAG add?</strong></td><td>Four new ways to fail: missed searches, facts split across chunks, wrong ranking, and an index that drifts from the content.</td></tr>
+        <tr><td><strong>When does this change?</strong></td><td>CI fails at 60K tokens; then search goes inside one function. CI also checks every section id is targeted by a test case.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>One call per answer</h3>
+  <p class="col">The model answers in plain prose and ends with one line of data. The Worker streams the prose, holds the data line back, checks it against the schema and turns it into refs and actions. A broken data line is ignored, and the answer still works.</p>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 230" role="img" aria-label="A reply is prose followed by a meta line. The prose becomes captions and voice, one checked sentence at a time. The meta line, which uses typed refs such as role:magenta, becomes source chips, a chip that opens the Time Machine at Magenta, a contact offer, and a coverage value that logs questions it could only partly answer.">
+        <defs>
+          <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+        </defs>
+        <rect x="30" y="30" width="520" height="170" rx="10" class="d-box"/>
+        <text x="48" y="56" class="d-cap">one model reply</text>
+        <text x="48" y="84" class="d-label">…Yash built an internal AI agent on retrieval-</text>
+        <text x="48" y="102" class="d-label">augmented generation. Want to hear how it was</text>
+        <text x="48" y="120" class="d-label">grounded in company data?</text>
+        <rect x="44" y="140" width="492" height="46" rx="6" class="d-box-hot"/>
+        <text x="56" y="159" class="d-m">&lt;meta&gt;{"refs":["role:magenta"],"show":</text>
+        <text x="56" y="176" class="d-m">"role:magenta","contact":false,"coverage":"direct"}</text>
+        <line x1="552" y1="100" x2="676" y2="56" class="d-line" marker-end="url(#a6)"/>
+        <rect x="680" y="34" width="290" height="40" rx="8" class="d-box-info"/>
+        <text x="696" y="59" class="d-label">captions and voice, each sentence gated</text>
+        <line x1="538" y1="163" x2="676" y2="104" class="d-line" marker-end="url(#a6)"/>
+        <rect x="680" y="86" width="290" height="32" rx="8" class="d-box"/>
+        <text x="696" y="107" class="d-label">source chips (unknown refs dropped)</text>
+        <line x1="538" y1="163" x2="676" y2="142" class="d-line" marker-end="url(#a6)"/>
+        <rect x="680" y="126" width="290" height="32" rx="8" class="d-box"/>
+        <text x="696" y="147" class="d-label">chip: open the Time Machine at Magenta</text>
+        <line x1="538" y1="163" x2="676" y2="180" class="d-line" marker-end="url(#a6)"/>
+        <rect x="680" y="166" width="290" height="32" rx="8" class="d-box"/>
+        <text x="696" y="187" class="d-label">contact offer · coverage logged</text>
+      </svg>
+    </div>
+    <figcaption>Refs are typed <code>kind:id</code>, with kinds <code>role</code>, <code>project</code>, <code>skill</code>, <code>edu</code>, <code>story</code>, <code>policy</code> and <code>doc</code> (the resume is <code>doc:resume</code>). The model names things, never YashOS windows. One zod schema writes both the prompt's format instructions and the parser, so they can't drift; <code>fit</code> and <code>role</code> fields come later. <code>coverage</code> is direct, adjacent or none; anything but direct is logged as a question to strengthen.</figcaption>
+  </figure>
+
+  <div class="grid-2 pairs">
+    <div class="card"><h3>Choosing the model by numbers</h3><p>Written before the test: voice uses the cheapest candidate with a p50 of 700 ms or less to the first answer word, measured from India and the US, that passes the safety probe. Candidates: MiniMax-M3.1-Flash at effort <code>low</code> (it always reasons, and defaults to the slowest effort), MiniMax-M3 with thinking off (same key and adapter), and Claude Haiku 5.5 with thinking off if there is a key.</p><p><b>Measured on 8 November</b> (30 runs each, from a laptop in India): Flash 1.59 s p50 to the first answer word, M3 1.63 s. No candidate met 700 ms, and M3 with thinking off failed the safety probe (it answered "Yes." about a skill the knowledge doesn't have, and invented a growth area). Text runs on Flash; the voice model stays open until it is measured from Cloudflare's network. Details: <code>docs/decisions/0001-phase-0-results.md</code>.</p></div>
+    <div class="card"><h3>A provider-neutral model port</h3><p><code>stream({stable, turns, tail, effort, maxTokens}, signal)</code> yields text, a content-free "still thinking" tick, and usage. Reasoning never leaves the adapter; a test proves only final text crosses the wire. History stores neutral turns, so changing provider breaks nothing.</p></div>
+    <div class="card"><h3>Knowledge flows one way</h3><p>Facts come from YashOS's <code>lib/content</code>: today <code>npm run knowledge:sync</code> copies them into <code>knowledge/content.json</code>; after integration a daily workflow pulls the site's published <code>/assistant-content.json</code> and opens a PR when it changes. Stories and policies are markdown Yash writes; an unknown ref fails the build.</p></div>
+    <div class="card"><h3>Cancelling for real</h3><p>When the visitor stops playback or leaves, the object aborts the model stream and closes the voice socket, so an interrupted reply stops costing money. Phase 0 checks that both providers really stop.</p></div>
+  </div>
+</section>
+
+<section id="grow">
+  <h2>Built to grow</h2>
+  <p class="col">Three things will change: how much there is to know about Yash, what the assistant can do on screen, and which models run it. Each one has a planned path that leaves the rest of the system alone.</p>
+
+  <h3>How knowledge reaches the model</h3>
+  <p class="col">Today every section goes into the cached part of the prompt. There is no search step, so nothing can be missed, and MiniMax reads cached tokens back at a tenth of the price. That stays right until the knowledge passes about 25K tokens or answers measurably slow down. After that, a search step picks a few sections for each question. A lookup tool, where the model asks for a section by name, is a third option for text only, because each lookup adds a round trip that voice can't afford. All three hand the model the same sections under the same typed refs, so nothing that checks answers has to change.</p>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 440" role="img" aria-label="Three ways knowledge can reach the model. Now: the whole knowledge sits in the cached prompt prefix. Past about 25K tokens: the prefix holds the rules, the profile and every section title, and a search step adds 3 to 6 sections per question. Text only: the model asks for a section with a lookup tool, which costs one more round trip. In all three the model answers with a data line of typed refs, and the grounding check and the evals work the same way.">
+        <defs>
+          <marker id="a9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+          <marker id="a9h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head-hot"/></marker>
+        </defs>
+
+        <text x="170" y="28" text-anchor="middle" class="d-label-hot">NOW</text>
+        <text x="170" y="48" text-anchor="middle" class="d-t">Whole knowledge</text>
+        <text x="500" y="28" text-anchor="middle" class="d-cap">past ~25K tokens</text>
+        <text x="500" y="48" text-anchor="middle" class="d-t">Search, then answer</text>
+        <text x="830" y="28" text-anchor="middle" class="d-cap">text only, optional</text>
+        <text x="830" y="48" text-anchor="middle" class="d-t">Lookup tool</text>
+
+        <rect x="20" y="64" width="300" height="120" rx="10" class="d-box-hot"/>
+        <text x="170" y="96" text-anchor="middle" class="d-t">Cached prefix</text>
+        <text x="170" y="118" text-anchor="middle" class="d-s">rules + every section</text>
+        <text x="170" y="138" text-anchor="middle" class="d-s">about 2.9K tokens today</text>
+        <text x="170" y="158" text-anchor="middle" class="d-s">CI stops the build at 60K</text>
+
+        <rect x="350" y="64" width="300" height="56" rx="10" class="d-box"/>
+        <text x="500" y="88" text-anchor="middle" class="d-t">Cached prefix</text>
+        <text x="500" y="106" text-anchor="middle" class="d-s">rules + profile + every section title</text>
+        <rect x="350" y="128" width="300" height="56" rx="10" class="d-box"/>
+        <text x="500" y="152" text-anchor="middle" class="d-t">Picked sections</text>
+        <text x="500" y="170" text-anchor="middle" class="d-s">search picks 3 to 6 per question</text>
+
+        <rect x="680" y="64" width="300" height="56" rx="10" class="d-box"/>
+        <text x="830" y="88" text-anchor="middle" class="d-t">Cached prefix</text>
+        <text x="830" y="106" text-anchor="middle" class="d-s">rules + profile + every section title</text>
+        <rect x="680" y="128" width="300" height="56" rx="10" class="d-box"/>
+        <text x="830" y="152" text-anchor="middle" class="d-m">get_section(ref)</text>
+        <text x="830" y="170" text-anchor="middle" class="d-s">the model asks; one more round trip</text>
+
+        <line x1="170" y1="184" x2="170" y2="210" class="d-line-hot" marker-end="url(#a9h)"/>
+        <line x1="500" y1="184" x2="500" y2="210" class="d-line" marker-end="url(#a9)"/>
+        <line x1="830" y1="184" x2="830" y2="210" class="d-line-dash" marker-end="url(#a9)"/>
+
+        <rect x="20" y="212" width="300" height="48" rx="10" class="d-box-info"/>
+        <text x="170" y="241" text-anchor="middle" class="d-t">Language model</text>
+        <rect x="350" y="212" width="300" height="48" rx="10" class="d-box-info"/>
+        <text x="500" y="241" text-anchor="middle" class="d-t">Language model</text>
+        <rect x="680" y="212" width="300" height="48" rx="10" class="d-box-info"/>
+        <text x="830" y="241" text-anchor="middle" class="d-t">Language model</text>
+
+        <line x1="170" y1="260" x2="170" y2="286" class="d-line-hot" marker-end="url(#a9h)"/>
+        <line x1="500" y1="260" x2="500" y2="286" class="d-line" marker-end="url(#a9)"/>
+        <line x1="830" y1="260" x2="830" y2="286" class="d-line" marker-end="url(#a9)"/>
+
+        <rect x="20" y="288" width="300" height="48" rx="10" class="d-box"/>
+        <text x="170" y="309" text-anchor="middle" class="d-t">Answer + data line</text>
+        <text x="170" y="326" text-anchor="middle" class="d-m">refs: role:magenta, …</text>
+        <rect x="350" y="288" width="300" height="48" rx="10" class="d-box"/>
+        <text x="500" y="309" text-anchor="middle" class="d-t">Answer + data line</text>
+        <text x="500" y="326" text-anchor="middle" class="d-m">refs: role:magenta, …</text>
+        <rect x="680" y="288" width="300" height="48" rx="10" class="d-box"/>
+        <text x="830" y="309" text-anchor="middle" class="d-t">Answer + data line</text>
+        <text x="830" y="326" text-anchor="middle" class="d-m">refs: role:magenta, …</text>
+
+        <line x1="170" y1="336" x2="170" y2="362" class="d-line-hot" marker-end="url(#a9h)"/>
+        <line x1="500" y1="336" x2="500" y2="362" class="d-line" marker-end="url(#a9)"/>
+        <line x1="830" y1="336" x2="830" y2="362" class="d-line" marker-end="url(#a9)"/>
+
+        <rect x="20" y="364" width="960" height="60" rx="10" class="d-box-ok"/>
+        <text x="500" y="389" text-anchor="middle" class="d-t">The same in all three</text>
+        <text x="500" y="409" text-anchor="middle" class="d-s">sections under typed refs · one data-line schema · the grounding check reads only cited sections · evals keyed by ref</text>
+      </svg>
+    </div>
+    <figcaption>Orange is today's path. Moving right adds a step and a way to fail (a missed search, a wasted lookup), so each move waits for a measured reason. The sections the grounding check reads are already the chunks a search would index, so switching needs no new format.</figcaption>
+  </figure>
+
+  <h3>Adding a feature</h3>
+  <p class="col">A new feature is mostly one declaration and one test, not a new pipeline. On-screen control by voice, such as "show me the Amazon work", goes through the data line. It arrives while the first sentence is still being spoken, so the window opens during the reply, not after it.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>To add</th><th>You write</th><th>It gets for free</th></tr></thead>
+      <tbody>
+        <tr><td><strong>A new kind of knowledge</strong> (talks, posts, case studies)</td><td>A ref kind and markdown docs that cite refs</td><td>Citations, source chips, the grounding check and the CI size check</td></tr>
+        <tr><td><strong>An on-screen action</strong> (open a window, play a demo, switch theme)</td><td>One field in the data-line schema and one line in YashOS's effect map</td><td>Prompt text generated from the schema, validation, and an allowlist. The model names an action; it never writes a URL or a window id</td></tr>
+        <tr><td><strong>An instant voice command</strong> ("open the resume")</td><td>A short phrase list checked before the model, only if the data-line path feels slow</td><td>A response with no model call and no cost</td></tr>
+        <tr><td><strong>A tool whose result the model needs</strong> (search Yash's posts)</td><td>Tool support on the model port, once, then one definition per tool</td><td>zod's <code>toJSONSchema</code> writes the tool from the same schema. Text gets it first; voice only once its latency is measured</td></tr>
+        <tr><td><strong>A new model or provider</strong></td><td>One profile entry: model id, parameters, prices</td><td>The probes, the evals and the scorecard compare it before it ships</td></tr>
+        <tr><td><strong>A new speech vendor</strong></td><td>One adapter behind the speech port</td><td>The voice loop, interrupts and limits, unchanged</td></tr>
+        <tr><td><strong>A new daily limit</strong> (voice minutes, spoken characters)</td><td>One unit name in the daily ledger</td><td>Atomic counting and the resting card</td></tr>
+        <tr><td><strong>A new behaviour rule</strong></td><td>One line in the rules and one eval case</td><td>The safety gate in CI</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>What stays fixed on purpose</h3>
+  <ul class="col">
+    <li>Every visitor word is data, wrapped in a per-request boundary, in every mode.</li>
+    <li>The output gate and the grounding check run on every answer, in both modes, inside the brain.</li>
+    <li>The model names things (refs and actions). It never names YashOS windows, URLs or contact details.</li>
+    <li>Voice makes one model call per answer until a measurement shows a tool call fits.</li>
+    <li>The assistant's behaviour doesn't change without an eval run.</li>
+  </ul>
+  <p class="col">Changing any of these needs a written decision record in <code>docs/decisions</code>.</p>
+</section>
+
+<section id="talk">
+  <h2>How it talks</h2>
+  <p class="col">It speaks about Yash in the third person, using the pronouns Yash chooses, and says it is an AI in the greeting. It is warm, brief and specific: numbers and outcomes, not adjectives. Spoken answers are one to three sentences, then it offers more.</p>
+  <h3>Point to the closest evidence, then be plain</h3>
+  <div class="callout col">It never volunteers a weakness and never says Yash "lacks" something. Asked about something outside its knowledge, it first gives the closest real evidence and says so. Pressed again, it says plainly that this isn't in what it knows about Yash's work and offers Yash directly. It never states or implies a skill, title, number or employer that isn't in the knowledge base; a redirect that sounds like a yes counts as an invented claim, and the tests check for it. The pressed-twice wording waits for Yash's approval.</div>
+  <div class="example col">
+    <p><b>Visitor:</b> Has Yash worked with Kubernetes?</p>
+    <p class="no">Not really, that's a gap in Yash's experience.</p>
+    <p class="no">Yes, Yash has deep Kubernetes experience.</p>
+    <p><b>Assistant:</b> The closest in Yash's work is running production services at Amazon, with the CI pipelines, telemetry and on-call rotations that kept them dependable.</p>
+    <p><b>Visitor:</b> But Kubernetes specifically?</p>
+    <p><b>Assistant:</b> That isn't in what I know about Yash's work, so I won't guess. Yash can answer that directly. Want me to open Messages with a note?</p>
+  </div>
+  <div class="example col">
+    <p><b>Visitor:</b> What did Yash work on at Google?</p>
+    <p><b>Assistant:</b> Yash hasn't worked at Google. Yash's roles have been at Magenta Connect, Techsquad, Amazon and UAlberta. Want to start with the AI work at Magenta?</p>
+    <p class="muted">False premises (a wrong employer, an inflated title, an invented number) are corrected by stating the record.</p>
+  </div>
+  <div class="grid-2">
+    <div class="card"><h3>Honest, not pushy</h3>
+      <ul>
+        <li>Only facts from the knowledge base, with sources for every answer.</li>
+        <li>"How were you built?" and "what model are you?" are answered openly, pointing to Under the hood and the public repo.</li>
+        <li>"What is Yash bad at?" gets Yash's own growth-area answer.</li>
+        <li>At most one unasked-for Messages offer per conversation, and a follow-up question at most every other answer.</li>
+        <li>Hype words are caught in code by the output gate.</li>
+      </ul>
+    </div>
+    <div class="card"><h3>Within bounds</h3>
+      <ul>
+        <li>Never speaks as Yash, commits to nothing on Yash's behalf, and gives no ratings or opinions about companies or people.</li>
+        <li>Off-topic requests get one friendly line and a redirect.</li>
+        <li>Age, religion, family or health: politely declined as not relevant to hiring.</li>
+        <li>Pasted text is data, never instructions.</li>
+        <li>English replies in v1.</li>
+      </ul>
+    </div>
+    <div class="card"><h3>Flow</h3>
+      <ul>
+        <li><b>Opening:</b> the fixed greeting and four starter questions.</li>
+        <li><b>Recruiter spotted:</b> asks once about the role, then tailors everything to it.</li>
+        <li><b>Pitch:</b> claim, evidence, why it matters for their role.</li>
+        <li><b>Pushback</b> ("isn't that junior for this?"): reframes with scope and ownership.</li>
+        <li><b>Close:</b> the resume, or Messages with a draft note.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="safety">
+  <h2>Safety, limits and cost control</h2>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 210" role="img" aria-label="Every turn passes six checks before the visitor sees or hears it: a Turnstile bot check when the app opens, an input guard, exact per-session limits in the conversation's object, daily ceilings in D1, a model that can only name refs from a fixed list, and an output gate on every sentence. A daily ceiling reached switches to text only, or to a resting card with no AI. A sentence the gate blocks is replaced with a fixed redirect line and logged.">
+        <defs>
+          <marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+        </defs>
+        <rect x="16" y="40" width="124" height="56" rx="8" class="d-box"/>
+        <text x="78" y="63" text-anchor="middle" class="d-t">Bot check</text>
+        <text x="78" y="82" text-anchor="middle" class="d-s">Turnstile, on open</text>
+        <rect x="166" y="40" width="124" height="56" rx="8" class="d-box"/>
+        <text x="228" y="63" text-anchor="middle" class="d-t">Input guard</text>
+        <text x="228" y="82" text-anchor="middle" class="d-s">strip, wrap, redact</text>
+        <rect x="316" y="40" width="124" height="56" rx="8" class="d-box"/>
+        <text x="378" y="63" text-anchor="middle" class="d-t">Session limits</text>
+        <text x="378" y="82" text-anchor="middle" class="d-s">exact, in the object</text>
+        <rect x="466" y="40" width="124" height="56" rx="8" class="d-box"/>
+        <text x="528" y="63" text-anchor="middle" class="d-t">Daily ceilings</text>
+        <text x="528" y="82" text-anchor="middle" class="d-s">one D1 update</text>
+        <rect x="616" y="40" width="124" height="56" rx="8" class="d-box-hot"/>
+        <text x="678" y="63" text-anchor="middle" class="d-t">Model</text>
+        <text x="678" y="82" text-anchor="middle" class="d-s">names refs only</text>
+        <rect x="766" y="40" width="124" height="56" rx="8" class="d-box"/>
+        <text x="828" y="63" text-anchor="middle" class="d-t">Output gate</text>
+        <text x="828" y="82" text-anchor="middle" class="d-s">every sentence</text>
+        <rect x="916" y="40" width="74" height="56" rx="8" class="d-box-ok"/>
+        <text x="953" y="72" text-anchor="middle" class="d-t">Visitor</text>
+        <line x1="141" y1="68" x2="163" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <line x1="291" y1="68" x2="313" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <line x1="441" y1="68" x2="463" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <line x1="591" y1="68" x2="613" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <line x1="741" y1="68" x2="763" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <line x1="891" y1="68" x2="913" y2="68" class="d-line" marker-end="url(#a7)"/>
+        <text x="78" y="124" text-anchor="middle" class="d-s">+ per-IP rate limit</text>
+        <text x="228" y="124" text-anchor="middle" class="d-s">pasted text is data</text>
+        <text x="378" y="124" text-anchor="middle" class="d-s">turns, audio, characters</text>
+        <text x="678" y="124" text-anchor="middle" class="d-s">no tools, can't act</text>
+        <line x1="528" y1="97" x2="528" y2="143" class="d-line-dash" marker-end="url(#a7)"/>
+        <text x="536" y="124" class="d-label">reached</text>
+        <rect x="423" y="146" width="210" height="46" rx="8" class="d-box"/>
+        <text x="528" y="165" text-anchor="middle" class="d-s">voice ceiling → text only</text>
+        <text x="528" y="183" text-anchor="middle" class="d-s">model ceiling → resting card</text>
+        <line x1="828" y1="97" x2="828" y2="143" class="d-line-dash" marker-end="url(#a7)"/>
+        <text x="836" y="124" class="d-label">blocked</text>
+        <rect x="723" y="146" width="210" height="46" rx="8" class="d-box"/>
+        <text x="828" y="165" text-anchor="middle" class="d-s">fixed redirect line instead</text>
+        <text x="828" y="183" text-anchor="middle" class="d-s">misuse flag logged</text>
+      </svg>
+    </div>
+    <figcaption>Each layer is simple on its own, and all but the model are plain code rather than another AI. Together they mean a misbehaving model, a script or a runaway bill hits a wall before anything reaches a visitor.</figcaption>
+  </figure>
+  <div class="grid-2">
+    <div class="card"><h3>Limits in units, not dollars</h3><p>Per session, exact, in the object: turns, audio seconds measured from bytes, and spoken characters (about 500 per reply; the rest shows as text). Per day, for everyone, in D1: voice minutes, model turns and spoken characters, each one atomic <code>UPDATE … RETURNING</code>, no rollover. Voice ceiling: text only. Model ceiling: resting, a static card with no AI (pitch, resume, Messages), and Yash is alerted. <code>ASSISTANT_MODE=voice|text|off</code> is the kill switch.</p></div>
+    <div class="card"><h3>The hard cap and the threat model</h3><p>MiniMax runs on a prepaid balance with auto-recharge off, so that balance is the hard cap. Flux is billed afterwards by Cloudflare, so the daily voice ceiling covers it. The per-IP limit runs only at <code>/session</code>, in its own namespace. Scripts and freeloaders are stopped; a funded attacker can cost at most one day's ceilings per day.</p></div>
+    <div class="card"><h3>Guards in code, not a moderation model</h3><p>Input: messages capped at 4,000 characters (12,000 for a job description), invisible Unicode stripped, pasted text wrapped in a per-request boundary marker. Output, per sentence, before it is shown or spoken: no URLs, emails, phone numbers, code, profanity, over-length, or ten-plus words copied from the visitor; each is checked on the sentence before and after markdown is stripped, so formatting can't smuggle a link through. Markdown is stripped, hype words are flagged, and a stray "he" or "she" is rewritten to "Yash". A moderation model comes in only if a harmful reply gets past.</p></div>
+    <div class="card"><h3>Data kept small</h3><p>Emails and phone numbers are redacted before the model or logs see them. A pasted job description is logged as a hash and length; visitor text never reaches console logs. The disclosure names each processor (Flux on Workers AI keeps no data), says Yash may read conversations and that they're deleted after 30 days. Phase 0 checks MiniMax's own terms before the disclosure names its region and retention.</p></div>
+    <div class="card"><h3>No bypass paths</h3><p>The hourly check is an in-Worker Cron Trigger that mints its own token, and a scheduled GitHub Action probes the public route from outside. Staging uses Turnstile test keys. Fakes and demo mode are chosen at deploy time, never per request. The prompt and knowledge are written as if public, because the repo is.</p></div>
+    <div class="card"><h3>Watching it and undoing it</h3><p>Each turn writes one TurnRecord (timings, tokens, model, prompt and knowledge hashes, grounding result) that the inspector, report and scorecard all read. The hourly check emails Yash on a failure, a slowdown or resting. Voice falls back to text, and the model gets one retry, then a message that opens Messages. One <code>wrangler rollback</code> restores code, prompt and knowledge together.</p></div>
+  </div>
+</section>
+
+<section id="quality">
+  <h2>Quality tests</h2>
+  <p class="col">An AI system can't be trusted on vibes. The test suite is written before the brain and runs against <code>/chat</code> exactly as visitors use it. Risk decides what blocks a change.</p>
+  <figure>
+    <div class="fig-wrap">
+      <svg viewBox="0 0 1000 340" role="img" aria-label="Each test case runs three times against /chat. Code checks for grounding, the output gate and format feed a merge gate that blocks on any safety failure. A judge model from another family grades quality and is itself tested on a planted set of good and flawed answers. Each run is saved as a results file and rendered as the scorecard. Below, partly answered questions from real visitors become new answers and new test cases.">
+        <defs>
+          <marker id="a8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head"/></marker>
+          <marker id="a8h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="d-head-hot"/></marker>
+        </defs>
+        <text x="20" y="28" class="d-cap">every change to prompt, knowledge, brain or model</text>
+        <rect x="20" y="44" width="140" height="60" rx="8" class="d-box"/>
+        <text x="90" y="70" text-anchor="middle" class="d-t">Test cases</text>
+        <text x="90" y="88" text-anchor="middle" class="d-s">≈40 + misuse set</text>
+        <rect x="190" y="44" width="120" height="60" rx="8" class="d-box"/>
+        <text x="250" y="70" text-anchor="middle" class="d-t">/chat</text>
+        <text x="250" y="88" text-anchor="middle" class="d-s">3 runs each</text>
+        <rect x="340" y="44" width="160" height="60" rx="8" class="d-box"/>
+        <text x="420" y="70" text-anchor="middle" class="d-t">Code checks</text>
+        <text x="420" y="88" text-anchor="middle" class="d-s">grounding, gate, format</text>
+        <rect x="530" y="44" width="140" height="60" rx="8" class="d-box"/>
+        <text x="600" y="70" text-anchor="middle" class="d-t">Judge model</text>
+        <text x="600" y="88" text-anchor="middle" class="d-s">another model family</text>
+        <rect x="720" y="44" width="260" height="60" rx="8" class="d-box"/>
+        <text x="850" y="70" text-anchor="middle" class="d-t">Results file</text>
+        <text x="850" y="88" text-anchor="middle" class="d-m">evals/results/&lt;date&gt;-&lt;sha&gt;.json</text>
+        <line x1="161" y1="74" x2="187" y2="74" class="d-line" marker-end="url(#a8)"/>
+        <line x1="311" y1="74" x2="337" y2="74" class="d-line" marker-end="url(#a8)"/>
+        <line x1="501" y1="74" x2="527" y2="74" class="d-line" marker-end="url(#a8)"/>
+        <line x1="671" y1="74" x2="717" y2="74" class="d-line" marker-end="url(#a8)"/>
+
+        <rect x="340" y="150" width="160" height="50" rx="8" class="d-box-hot"/>
+        <text x="420" y="172" text-anchor="middle" class="d-t">Merge gate</text>
+        <text x="420" y="190" text-anchor="middle" class="d-s">blocks on any failure</text>
+        <rect x="530" y="150" width="140" height="50" rx="8" class="d-box"/>
+        <text x="600" y="172" text-anchor="middle" class="d-t">Planted set</text>
+        <text x="600" y="190" text-anchor="middle" class="d-s">15 good, 15 flawed</text>
+        <rect x="720" y="150" width="260" height="50" rx="8" class="d-box-ok"/>
+        <text x="850" y="172" text-anchor="middle" class="d-t">Scorecard</text>
+        <text x="850" y="190" text-anchor="middle" class="d-s">README and Under the hood</text>
+        <line x1="420" y1="105" x2="420" y2="147" class="d-line" marker-end="url(#a8)"/>
+        <text x="428" y="131" class="d-label">safety results</text>
+        <line x1="600" y1="149" x2="600" y2="107" class="d-line" marker-end="url(#a8)"/>
+        <text x="608" y="131" class="d-label">measures catch and false flags</text>
+        <line x1="850" y1="105" x2="850" y2="147" class="d-line" marker-end="url(#a8)"/>
+        <text x="858" y="131" class="d-label">rendered</text>
+
+        <text x="980" y="246" text-anchor="end" class="d-cap">learning from real visitors</text>
+        <rect x="760" y="260" width="220" height="56" rx="8" class="d-box"/>
+        <text x="870" y="284" text-anchor="middle" class="d-t">Partly answered</text>
+        <text x="870" y="302" text-anchor="middle" class="d-s">coverage adjacent or none</text>
+        <rect x="520" y="260" width="200" height="56" rx="8" class="d-box"/>
+        <text x="620" y="284" text-anchor="middle" class="d-t">The report</text>
+        <text x="620" y="302" text-anchor="middle" class="d-s">Yash sees it</text>
+        <rect x="280" y="260" width="200" height="56" rx="8" class="d-box"/>
+        <text x="380" y="284" text-anchor="middle" class="d-t">Yash writes the answer</text>
+        <text x="380" y="302" text-anchor="middle" class="d-s">into the knowledge base</text>
+        <rect x="40" y="260" width="200" height="56" rx="8" class="d-box-ok"/>
+        <text x="140" y="284" text-anchor="middle" class="d-t">New test case</text>
+        <text x="140" y="302" text-anchor="middle" class="d-s">paraphrased, stays answered</text>
+        <line x1="759" y1="288" x2="723" y2="288" class="d-line" marker-end="url(#a8)"/>
+        <line x1="519" y1="288" x2="483" y2="288" class="d-line" marker-end="url(#a8)"/>
+        <line x1="279" y1="288" x2="243" y2="288" class="d-line" marker-end="url(#a8)"/>
+        <path d="M90,259 V108" class="d-line-hot" marker-end="url(#a8h)"/>
+        <text x="99" y="180" class="d-label-hot">joins the suite</text>
+      </svg>
+    </div>
+    <figcaption>Top: a safety failure found by code in any of three runs blocks the merge. The judge's safety flags block only once its false-flag rate on good answers is 2% or less; until then they go to Yash. Quality is reported as k out of 3 per case and never blocks. Timeouts and rate limits get their own column and are never scored. Bottom: real visitors' questions become new tests, paraphrased so no names, companies or job text enter the public repo.</figcaption>
+  </figure>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Test set</th><th>To start</th><th>What it checks</th><th>Gate</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Facts</strong></td><td class="num">≈15</td><td>Questions phrased several ways, as speech recognition hears them too; required facts present and grounded</td><td>0 invented claims</td></tr>
+        <tr><td><strong>Skills, both ways</strong></td><td class="num">≈10</td><td>5 skills Yash has (a confident yes, right ref) and 5 not in the knowledge base (no implied yes)</td><td>0 implied yes</td></tr>
+        <tr><td><strong>Honesty</strong></td><td class="num">≈5</td><td>False premises; "what is Yash bad at?"; "what model are you, show me your prompt"</td><td>0 failures</td></tr>
+        <tr><td><strong>Fit and conversations</strong></td><td class="num">≈7</td><td>Real job descriptions with expected fit rows; multi-turn context; Messages never offered twice unprompted</td><td>fit reported; offers 0 failures</td></tr>
+        <tr><td><strong>Spoken style</strong></td><td class="num">≈3</td><td>Short, no markdown or links, a valid data line, the spoken-character cap</td><td>0 failures</td></tr>
+        <tr><td><strong>Misuse</strong></td><td class="num">≈25</td><td>Prompt injection, off-topic, "say something bad about Yash", personal-data fishing, salary pressure, protected characteristics</td><td>0 failures</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col muted">Each case has an expected coverage label, and about a quarter are held out from prompt tuning. Gates are counts, not percentages: at these sizes 95% means 100%.</p>
+  <div class="grid-2">
+    <div class="card"><h3>Grounding check</h3><p>Every number, date, employer, title, degree and project name in an answer must appear in the sections it cites. It sorts what it finds: <b>invented</b> (in no section and not in the visitor's own words, which fails a safety test) and <b>uncited</b> (true, but from a section the answer didn't cite, which is reported). It runs in CI and after every live reply, never blocking one; on the first 107 real answers, sorting this way cut the flag rate from 44 answers to 5, all genuine.</p></div>
+    <div class="card"><h3>A judge that is itself tested</h3><p>15 good answers and 15 copies with one planted defect each (an invented skill, a wrong number, an implied yes, a citation that doesn't fit). Trusted at 95% caught and 2% false flags. Fake models test the harness too: inventing or empty fakes must fail.</p></div>
+    <div class="card"><h3>Results kept, CI kept safe</h3><p>Each run is committed as a file keyed by git sha, prompt, knowledge, model and judge versions. Tests run on pull requests (forks get no secrets), pushes to main and by hand, never <code>pull_request_target</code>, on a staging key with its own small balance.</p></div>
+  </div>
+  <p class="col muted">Voice gets its own weekly browser test: recorded questions in Indian- and US-accented English are played as the microphone, and the transcript, answer and timing are checked.</p>
+</section>
+
+<section id="languages">
+  <h2>Languages</h2>
+  <p class="col">All three AI parts handle more than English, but each language has to be tested before it is trusted. v1 replies in English; other languages are a setting to switch on once their tests pass.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Part</th><th>Languages</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Language model</strong><br>MiniMax</td><td>Many; MiniMax publishes no list</td><td>Strongest in English and Chinese. No published multilingual benchmarks, so our own tests decide.</td></tr>
+        <tr><td><strong>Voice</strong><br>MiniMax Speech 2.8</td><td>About 40, including Hindi</td><td>Reported consistently by third parties; to confirm in MiniMax's docs.</td></tr>
+        <tr><td><strong>Speech-to-text</strong><br>Deepgram Flux</td><td>English only on Workers AI. Flux Multilingual covers 10 languages, including Hindi, on Deepgram's own API.</td><td>Hindi needs a second speech-to-text adapter that calls Deepgram directly, with a language hint. The port stays the same.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col">Language is one setting that flows end to end: the speech model, the reply language, the voice and the pronunciation list. Hindi is the natural first addition: a Deepgram adapter, a Hindi voice and Hindi tests. Choosing a language per conversation waits until a second language ships.</p>
+</section>
+
+<section id="yashos">
+  <h2>In YashOS</h2>
+  <p class="col">Text goes into YashOS before voice, in Phase 2, following portfolio-os conventions: modern and retro versions, content from <code>lib/content</code>, and <code>npm run check</code> passing. It is a normal app in <code>lib/apps.ts</code>, so the dock, search, a retro twin, the phone sheet and intents come free.</p>
+  <div class="grid-2">
+    <div class="card"><h3>Modern and retro</h3><p>Modern: a text-first panel with a Talk button, an orb that shows the Talk state, captions and source chips. Retro: an XP-style window with balloon captions. "Under the hood" is one inspector styled by the theme. The speaker follows the saved YashOS sound setting.</p></div>
+    <div class="card"><h3>Ways in</h3><p>Dock, search ("Ask about Yash…" sends the typed text in), the terminal (<code>ask &lt;question&gt;</code>), and a deep link: <code>?ask</code> or <code>?ask=fit</code>, fixed values only, never free text. It is read outside the dev-only guard and routed through the intent system. The Hero, welcome note and phone notice point to it.</p></div>
+    <div class="card"><h3>Refs become effects</h3><p>A small <code>lib/assistant/effects.ts</code> maps refs to existing effects: roles open <code>experience</code>, projects <code>work</code>, skills <code>toolkit</code>, and <code>doc:resume</code> uses <code>openResume()</code>. Each appears as a chip. Only desktop voice mode opens the window by itself; on a phone it would cover the chat.</p></div>
+    <div class="card"><h3>Hand-over to Messages</h3><p><code>pick('hiring')</code> plus a new <code>prefill(text)</code> draft, within the 2,000-character limit, never sent automatically. A client template writes the note (the role and titles of sources discussed), with an optional short id that grants nothing. The disclosure says the visitor's questions are shared with Yash.</p></div>
+    <div class="card"><h3>Costs YashOS nothing</h3><p>No bytes load until the assistant opens, and the client stays under 30 KB gzipped. Turnstile runs invisibly as the app opens, so the first answer doesn't wait for it. The mic is requested only on Talk.</p></div>
+    <div class="card"><h3>Accessible</h3><p>Captions always visible, answers announced to screen readers, Space to talk and Escape to stop, a still orb with reduced motion, and push-to-talk on phones.</p></div>
+  </div>
+</section>
+
+<section id="review">
+  <h2>Review findings</h2>
+  <p class="col"><b>First review.</b> Before revision 3, an independent reviewer read the design and the YashOS code and checked risky claims against vendor docs. It agreed with one text brain behind the voice, the whole knowledge base in the prompt, and a model that can't act. Its fixes that still stand: the same-origin route, real cancellation, an hourly check, one-command rollback, a judge from another vendor and Messages as the only contact path.</p>
+  <h3>Second review</h3>
+  <p class="col">Six reviewers, each with one lens (recruiter, AI hiring signal, real-time voice, evolvability, simplicity and risk, security, cost and privacy), proposed 43 changes. Two sceptics judged each one for value against complexity and for correctness against vendor docs. These are the adopted outcomes.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Finding</th><th>What changed</th></tr></thead>
+      <tbody>
+        <tr><td><strong>It was built around voice, but most recruiters will type,</strong> and the outputs that sell Yash weren't specified.</td><td>Text first, shipped into YashOS before voice; starter questions; a fit card; a hand-over with a draft note.</td></tr>
+        <tr><td><strong>Being stateless needed workarounds, and its limits had holes:</strong> counters reset on reconnect, the budget was in dollars, and speech-to-text sat outside the prepaid cap.</td><td>One Durable Object per conversation; limits in units; daily ceilings in D1; a resting card; a stated threat model.</td></tr>
+        <tr><td><strong>The 1.5 s budget left out network time,</strong> gave 600 ms to a model that always reasons, and described caching wrongly.</td><td>The voice model is picked in Phase 0 by a written rule; latency is drawn as target against measured; caching is automatic, its lifetime measured.</td></tr>
+        <tr><td><strong>Talking over the assistant was the riskiest client code,</strong> and raw model text sent to the voice would skip the gate.</td><td>Half-duplex in v1; the Worker gates each sentence and sends it whole.</td></tr>
+        <tr><td><strong>Majority vote let an answer that invents a skill one time in three pass.</strong></td><td>Risk-based scoring, a judge tested on planted defects, a grounding check on every reply.</td></tr>
+        <tr><td><strong>The seams weren't written down,</strong> and the data line used YashOS window names.</td><td>Contracts as code, typed <code>kind:id</code> refs, three vendor ports, import rules in lint.</td></tr>
+        <tr><td><strong>The repo is public, so the prompt and knowledge are too,</strong> and content synced the wrong way.</td><td>Written as if public; data minimised; content flows one way, from the site.</td></tr>
+        <tr><td><strong>The hourly check and staging needed bypasses, and CI could expose keys.</strong></td><td>The cron check mints its own token; Turnstile test keys on staging; never <code>pull_request_target</code>.</td></tr>
+        <tr><td><strong>A sceptical hiring manager could catch it out,</strong> and the bot check delayed the first answer.</td><td>False premises corrected; its build answered openly; no over-selling; Turnstile runs when the app opens.</td></tr>
+        <tr><td><strong>Phase 0 was overloaded and had no order.</strong></td><td>Riskiest first, three days, number gates and a decision record.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card"><h3>Considered and rejected</h3>
+    <ul>
+      <li><b>Analytics Engine, Workers Logs and object alarms instead of D1:</b> three parts for one, a retention that breaks the 30-day deletion promise, and the report still needs a listable store.</li>
+      <li><b>AI Gateway in v1:</b> an extra hop and credential, and exact-match caching is useless for chat. Revisit for a log viewer or spend caps.</li>
+      <li><b>A signed history chain:</b> moot once the object owns the history.</li>
+      <li><b>MiniMax's bidirectional voice socket:</b> it turns raw model text into sentences on the server, which we can't use because sentences must pass the gate first, and its sentence events carry no ids or text. Phase 0 times both sockets anyway.</li>
+      <li><b>Citation markers per sentence, for now:</b> format risk on a model that ignores stop sequences; answer-level refs and the grounding check get most of the value.</li>
+      <li><b>Follow-up chips, a "share" reply style, context from the front window, and recall-by-position analysis:</b> put off until logs or suite size justify them.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="roadmap">
+  <h2>Roadmap</h2>
+  <p class="col">Each phase ends with something working and measured, and gets its own step-by-step plan before code starts.</p>
+  <div class="phases">
+    <div class="phase"><div class="n">0</div><div class="body"><div class="head"><h3>Proof</h3><span class="pill">measured</span><span class="tag">about a week · riskiest first</span></div><p><b>Day 1:</b> model probe (Flash at low effort, M3 with thinking off, Haiku 5.5 if there is a key) on a realistic 20K-token prompt, cold and warm, 30 runs each from India and the US, reasoning tokens recorded; first audio on both voice sockets; cache survival after 0, 1, 5, 15 and 30 idle minutes. <b>Day 2:</b> voice loop spike in the Conversation object: Flux relay, half-duplex, capture in Chrome, iPhone Safari and Firefox, turn end to first audio, the hop from India to the object, Flux with silent frames, cancellation, reconnect after a deploy. <b>Day 3:</b> redirect-rule probe, about 15 questions three times each, hand-graded for "admitted a gap", "implied a yes" and "corrected a false premise"; the MiniMax data-handling record. The knowledge interview runs alongside.</p><p>Code that stays: repo skeleton, CI (typecheck, lint with import rules, unit tests, safe triggers), protocol types, ports, data-line schema and parser, knowledge sync and bundle build, TurnRecord.</p><p class="done">Done when: a one-page decision record with the numbers picks the voice model and the voice socket.</p><p><b>Result, 8 November</b> (<code>docs/decisions/0001-phase-0-results.md</code>): text runs on Flash, the only candidate that passed the safety probe; the voice socket is <code>t2a_v2</code>; no cache warming. The voice model stays open: no candidate reached 700 ms to the first answer word from India (Flash 1.59 s p50). Interrupts stop audio within 10 ms with real providers. Still to do with Yash: capture on iPhone Safari and Firefox, and reconnecting after a deploy.</p></div></div>
+    <div class="phase now"><div class="n">1</div><div class="body"><div class="head"><h3>Text assistant</h3><span class="pill accent">built, in testing</span><span class="tag">medium</span></div><p><code>/session</code> and <code>/chat</code> in the Conversation object, the prompt, parser, output gate and grounding check, limits and daily ceilings, logging, the cron check, the test page with its inspector, fakes and the keyless demo mode, about 40 cases, the judge with its planted set, the scorecard, and staging.</p><p class="done">Done when: the code-checked safety gates show zero failures, text answers start within 1 second at p50, and Yash has approved every story and policy for publishing.</p><p><b>Status, 8 November:</b> built and working end to end with real MiniMax and Flux: <code>/session</code> with Turnstile, <code>/chat</code> streaming, the output gate and grounding check on every answer, the daily ceiling and turn log in D1, the hourly canary, the test page with its inspector, and 43 eval cases. On real MiniMax, 92 of 96 safety runs pass (28 to 30 of the 32 cases pass all three runs, varying from run to run), all 11 quality cases pass, no answer has an invented claim, and 851 unit tests pass. Not done yet: the judge (needs a key), staging, Yash's stories and policies, and the 1-second target (Flash is at 1.6 s from India).</p></div></div>
+    <div class="phase"><div class="n">2</div><div class="body"><div class="head"><h3>Live in YashOS, text</h3><span class="tag">medium</span></div><p>A normal app with starter questions, the <code>?ask</code> deep link, the Messages hand-over with a draft note, refs mapped to effects, the content export, and the route at <code>yashos.dev/assistant/*</code>.</p><p class="done">Done when: portfolio-os checks pass, first load is unchanged, both themes and phones are checked, and real recruiters can use it.</p></div></div>
+    <div class="phase"><div class="n">3</div><div class="body"><div class="head"><h3>Voice</h3><span class="tag">medium</span></div><p><code>/voice</code> in the Conversation object, the voice socket per reply, the half-duplex client, key terms, timings in the inspector, and the weekly accented-audio browser test.</p><p class="done">Done when: voice meets the p50 and p95 targets set from the Phase 0 numbers, and spoken-style tests pass.</p></div></div>
+    <div class="phase"><div class="n">4</div><div class="body"><div class="head"><h3>Showcase</h3><span class="tag">small</span></div><p>README with a demo video, the architecture diagram, the scorecard badge, the decision records and a short post.</p><p class="done">Done when: a stranger can understand it, run it without keys and see the test results in 10 minutes.</p></div></div>
+  </div>
+</section>
+
+<section id="cost">
+  <h2>Cost</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Item</th><th>Price</th><th>Per voice conversation of about five minutes</th></tr></thead>
+      <tbody>
+        <tr><td><strong>MiniMax M3.1-Flash</strong></td><td>$0.15 in and $0.60 out per million tokens; cache read $0.015</td><td class="num">about $0.01</td></tr>
+        <tr><td><strong>MiniMax M3</strong>, if it wins the bake-off</td><td>$0.30 in and $1.20 out per million tokens; cache read $0.06</td><td class="num">about $0.02</td></tr>
+        <tr><td><strong>MiniMax Speech</strong> <code>speech-2.8-turbo</code></td><td>$60 per million characters (HD $100)</td><td class="num">about $0.13</td></tr>
+        <tr><td><strong>Flux speech-to-text</strong></td><td>$0.0077 per audio minute; silent frames count</td><td class="num">about $0.04</td></tr>
+        <tr><td><strong>Hourly check</strong></td><td>one text question an hour</td><td class="num">about $2 a month</td></tr>
+        <tr><td><strong>Cloudflare</strong></td><td>$5 a month Workers paid plan, which covers the Durable Objects and D1 at this traffic</td><td class="num">fixed</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="col"><b>Measured on 8 November:</b> one text answer costs $0.00014 when MiniMax serves the prompt from its cache and about $0.0007 when it doesn't; a spoken answer costs the same for the model, plus about $0.007 of speech for a two-sentence reply (120 characters at $60 per million). The 107-answer eval suite costs about $0.05 a run.</p>
+  <p class="col">Roughly $0.15 to $0.20 per voice conversation and about a cent per text conversation. A $25 monthly cap covers well over 100 voice conversations. At the proposed daily ceilings, a full day costs at most about $5, mostly speech.</p>
+</section>
+
+<section id="questions">
+  <h2>Open questions for Yash</h2>
+  <ol class="col">
+    <li><b>Spending limits.</b> A $25 monthly cap, held by the prepaid MiniMax balance, and daily ceilings of 30 voice minutes, 400 model turns and 60K spoken characters. A day at those ceilings costs about $5, so five such days would use the month.</li>
+    <li><b>Policy answers.</b> Recommended: answer logistics directly (availability, location and time zone, remote or relocation, work authorization, notice period) and send only salary numbers to Messages. All policy text will be public.</li>
+    <li><b>Name, voice and pronouns:</b> what the assistant is called, which stock voice from a shortlist (never a clone), and which pronouns it uses for Yash.</li>
+    <li><b>Privacy with MiniMax, Cloudflare and Deepgram:</b> the data-handling record found that MiniMax's terms allow using inputs and outputs to improve its services, with no opt-out stated; Flux on Workers AI keeps no data. Accept MiniMax for visitor text, or choose another model vendor.</li>
+    <li><b>Workers Paid ($5 a month) before going live.</b> The account is on Workers Free, where voice breaks: Flux gets about 14 minutes a day, a voice socket gets 50 subrequests (about 17–25 spoken turns), and a cold turn can pass the 10 ms CPU limit. The cost table already assumes Paid. Details: <code>docs/research/stt-options.md</code>.</li>
+    <li><b>A pay-as-you-go MiniMax key for the live site.</b> The current key is a Token Plan subscription, which throttles bursts per minute and has 5-hour and weekly quotas.</li>
+    <li><b>A staging deploy</b> on Cloudflare: it measures speed from Cloudflare's network instead of a home connection, and tests reconnecting after a deploy.</li>
+    <li><b>The voice model:</b> measure Flash from the edge first; then a faster host for a MiniMax model, or Claude Haiku 5.5 for voice only, or accept about 2 seconds.</li>
+    <li><b>A key for the test judge</b> from another model family, such as Anthropic.</li>
+    <li><b>The pressed-twice wording:</b> "That isn't in what I know about Yash's work, so I won't guess. Yash can answer that directly." Approve or change it.</li>
+    <li><b>Time for the knowledge interview:</b> about two hours of writing, or a recorded conversation turned into drafts. New in this revision: a growth-area answer in Yash's words, a two-sentence "why Yash for AI engineering", and only public or cleared metrics.</li>
+  </ol>
+  <p class="col muted">The public-repo question is settled: the repo is already public.</p>
+  <details>
+    <summary>Knowledge interview questions</summary>
+    <h4>Story and motivation</h4>
+    <ol><li>Why AI engineering, and why now?</li><li>In two sentences: why you for AI engineering?</li><li>What kind of team and problem brings out your best work?</li><li>What would your last manager say is your biggest strength?</li><li>A growth area you are working on, in your own words.</li></ol>
+    <h4>For each role: Magenta Connect, Techsquad, Amazon, UAlberta</h4>
+    <ol start="6"><li>The hardest technical problem, and how you solved it.</li><li>The decision you are proudest of, and what you traded off.</li><li>Numbers that are public or cleared to share: scale, latency, users, money, time saved.</li></ol>
+    <h4>For each project: Field Ops, AI analytics, YashOS, this assistant</h4>
+    <ol start="9"><li>Architecture in three sentences.</li><li>The non-obvious design choice, and why.</li><li>What broke, and what you learned.</li></ol>
+    <h4>Stories, one each</h4>
+    <ol start="12"><li>Leading without authority.</li><li>A production incident and how it was handled.</li><li>Disagreeing with a teammate or manager.</li><li>Ambiguous requirements.</li><li>Mentoring someone.</li></ol>
+    <h4>AI specifically</h4>
+    <ol start="17"><li>How the Magenta agent was grounded in company data, and how it was evaluated.</li><li>What Georgia Tech ML coursework has changed in how you build.</li><li>When to use RAG, fine-tuning, or neither.</li><li>How you evaluate LLM features.</li></ol>
+    <h4>Logistics and policy</h4>
+    <ol start="21"><li>Work authorization by country; relocation; remote, hybrid or onsite.</li><li>Notice period and earliest start date.</li><li>Roles you are and are not interested in.</li><li>How salary questions should be handled.</li></ol>
+    <h4>Personality</h4>
+    <ol start="25"><li>What you do outside work that shapes how you work.</li><li>One thing a recruiter should know that isn't on the resume.</li></ol>
+  </details>
+  <div class="sources">
+    <p>Sources checked for revisions 3 and 4:</p>
+    <ul>
+      <li><a href="https://developers.cloudflare.com/workers-ai/models/flux/">Cloudflare: Deepgram Flux on Workers AI</a></li>
+      <li><a href="https://developers.cloudflare.com/changelog/post/2025-10-02-deepgram-flux/">Cloudflare changelog: Deepgram Flux on Workers AI</a></li>
+      <li><a href="https://developers.deepgram.com/docs/flux/feature-overview.md">Deepgram: Flux feature overview</a></li>
+      <li><a href="https://developers.deepgram.com/docs/flux/configuration">Deepgram: Flux configuration</a></li>
+      <li><a href="https://developers.deepgram.com/docs/flux/language-prompting">Deepgram: Flux Multilingual and language prompting</a></li>
+      <li><a href="https://deepgram.com/blog/introducing-flux-multilingual">Deepgram: Introducing Flux Multilingual</a></li>
+      <li><a href="https://platform.minimax.io/docs/api-reference/text-anthropic-api">MiniMax: Anthropic-compatible API</a></li>
+      <li><a href="https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache">MiniMax: Anthropic-compatible caching</a></li>
+      <li><a href="https://platform.minimax.io/docs/api-reference/text-prompt-caching">MiniMax: prompt caching</a></li>
+      <li><a href="https://platform.minimax.io/docs/api-reference/speech-t2a-websocket">MiniMax: speech WebSocket API</a></li>
+      <li><a href="https://platform.minimax.io/docs/api-reference/speech-t2a-websocket-bidi">MiniMax: bidirectional speech WebSocket</a></li>
+      <li><a href="https://platform.minimax.io/docs/pricing/overview">MiniMax: pricing</a></li>
+      <li><a href="https://vercel.com/ai-gateway/models/minimax-m3.1-flash">Vercel AI Gateway: MiniMax M3.1-Flash</a></li>
+      <li><a href="https://pricepertoken.com/pricing-page/model/minimax-minimax-m3">Price Per Token: MiniMax pricing</a></li>
+      <li><a href="https://help.scenario.com/articles/8237857559-minimax-speech-2-8-the-essentials">Scenario: MiniMax Speech 2.8 languages</a></li>
+      <li><a href="https://platform.claude.com/docs/en/about-claude/models/overview">Anthropic: models overview</a></li>
+      <li><a href="https://www.anthropic.com/news/contextual-retrieval">Anthropic: Contextual Retrieval</a></li>
+      <li><a href="https://developers.cloudflare.com/agents/communication-channels/voice/">Cloudflare: voice agents</a></li>
+      <li><a href="https://developers.cloudflare.com/durable-objects/concepts/what-are-durable-objects/">Cloudflare: what are Durable Objects</a></li>
+      <li><a href="https://developers.cloudflare.com/durable-objects/best-practices/websockets/">Cloudflare: Durable Objects and WebSockets</a></li>
+      <li><a href="https://developers.cloudflare.com/workers/configuration/compatibility-flags/">Cloudflare: compatibility flags</a></li>
+      <li><a href="https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/">Cloudflare: rate limiting binding</a></li>
+      <li><a href="https://developers.cloudflare.com/workers/configuration/cron-triggers/">Cloudflare: Cron Triggers</a></li>
+      <li><a href="https://developers.cloudflare.com/workers/platform/limits/">Cloudflare: Workers limits</a></li>
+      <li><a href="https://developers.cloudflare.com/turnstile/get-started/server-side-validation/">Cloudflare: Turnstile server-side validation</a></li>
+      <li><a href="https://developers.cloudflare.com/turnstile/troubleshooting/testing/">Cloudflare: Turnstile testing</a></li>
+      <li><a href="https://developers.cloudflare.com/workers/platform/routing/routes/">Cloudflare: Workers routes</a></li>
+      <li><a href="https://developers.cloudflare.com/changelog/post/2025-05-22-handle-request-cancellation/">Cloudflare: handling request cancellation</a></li>
+      <li><a href="https://groups.google.com/a/chromium.org/g/blink-dev/c/x5nfoaUAUWY">Chromium: echo cancellation modes</a></li>
+    </ul>
+  </div>
+</section>
+
+</div>

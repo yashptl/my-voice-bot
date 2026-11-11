@@ -1,0 +1,153 @@
+[
+  {
+    "id": "current-role",
+    "question": "Where does Yash work now?",
+    "refs": ["role:magenta", "doc:profile"],
+    "good": "Yash is a Full Stack Developer at Magenta Connect in Ahmedabad, India, since Aug 2025, modernizing an enterprise sales platform from its interface to its intelligence layer. There, Yash built an internal AI agent on retrieval-augmented generation and vector search, and moved the platform to Module Federation micro-frontends.",
+    "planted": {
+      "type": "wrong_number",
+      "answer": "Yash is a Full Stack Developer at Magenta Connect in Ahmedabad, India, since Aug 2023, modernizing an enterprise sales platform from its interface to its intelligence layer. There, Yash built an internal AI agent on retrieval-augmented generation and vector search, and moved the platform to Module Federation micro-frontends."
+    }
+  },
+  {
+    "id": "amazon",
+    "question": "What did Yash do at Amazon?",
+    "refs": ["role:amazon"],
+    "good": "At Amazon in Toronto, from Feb 2022 to Mar 2023, Yash was a Software Development Engineer. Yash built full-stack features for high-concurrency systems and launched them with zero post-launch defects, ran on-call rotations and cut the ticket queue by 30%, and mentored new hires on architecture.",
+    "planted": {
+      "type": "wrong_number",
+      "answer": "At Amazon in Toronto, from Feb 2022 to Mar 2023, Yash was a Software Development Engineer. Yash built full-stack features for high-concurrency systems and launched them with zero post-launch defects, ran on-call rotations and cut the ticket queue by 50%, and mentored new hires on architecture."
+    }
+  },
+  {
+    "id": "education",
+    "question": "Where did Yash study?",
+    "refs": ["edu:ualberta", "edu:gatech"],
+    "good": "Yash earned a BSc in Computer Science at the University of Alberta, graduating in 2021 with a mathematics minor. Since Aug 2025, Yash has been doing an MS in Computer Science at Georgia Tech, remotely, with a machine learning specialization.",
+    "planted": {
+      "type": "wrong_number",
+      "answer": "Yash earned a BSc in Computer Science at the University of Alberta, graduating in 2019 with a mathematics minor. Since Aug 2025, Yash has been doing an MS in Computer Science at Georgia Tech, remotely, with a machine learning specialization."
+    }
+  },
+  {
+    "id": "techsquad",
+    "question": "Tell me about Yash's work at Techsquad.",
+    "refs": ["role:techsquad"],
+    "good": "At Techsquad, on a remote contract from Jun 2023 to Jan 2024, Yash led a cross-functional team of 8 through an ERP overhaul: operating costs fell 20%, and the work came in 10% under budget. Yash also built automated data pipelines that cut manual effort by 40% and sped up processing by 30%.",
+    "planted": {
+      "type": "invented_fact",
+      "answer": "At Techsquad, on a remote contract from Jun 2023 to Jan 2024, Yash led a cross-functional team of 8 through an ERP overhaul: operating costs fell 20%, and the work came in 10% under budget. Yash also built automated data pipelines that cut manual effort by 40% and sped up processing by 30%, and built the company's customer-facing mobile app."
+    }
+  },
+  {
+    "id": "leading-skills",
+    "question": "What are Yash's strongest skills?",
+    "refs": ["doc:profile", "doc:skills"],
+    "good": "Yash leads with React, Next.js, Python, FastAPI, LLMs, RAG and vector databases. In practice, Yash led the frontend overhaul and theme engine at Magenta Connect in React, and semantic search over vector databases sits behind both of Yash's AI agents.",
+    "planted": {
+      "type": "invented_fact",
+      "answer": "Yash leads with React, Next.js, Python, FastAPI, LLMs, RAG and vector databases. In practice, Yash led the frontend overhaul and theme engine at Magenta Connect in React, and semantic search over vector databases sits behind both of Yash's AI agents. Yash also holds an AWS Solutions Architect certification."
+    }
+  },
+  {
+    "id": "how-built",
+    "question": "How were you built?",
+    "refs": ["project:assistant"],
+    "good": "Yash designed and built me to answer questions about Yash's work, by text or by voice. One Cloudflare Worker serves me, each conversation gets its own Durable Object, and the language model and the voice come from MiniMax. The whole knowledge base sits at the front of the prompt, so the model sees all of it at once instead of searching it piece by piece.",
+    "planted": {
+      "type": "invented_fact",
+      "answer": "Yash designed and built me to answer questions about Yash's work, by text or by voice. One Cloudflare Worker serves me, each conversation gets its own Durable Object, and the language model and the voice come from MiniMax. For each question, a vector database searches the knowledge base piece by piece and passes the model only the closest matches."
+    }
+  },
+  {
+    "id": "analytics",
+    "question": "What is the AI analytics platform?",
+    "refs": ["project:analytics"],
+    "good": "The AI analytics platform is an independent project: Instagram analytics you can talk to. Yash re-engineered the original university dashboard into a SaaS platform with Module Federation, so the analytics engine deploys on its own, and an LLM agent uses retrieval over a vector database to answer questions about the data and turn them into marketing strategies.",
+    "planted": {
+      "type": "citation_mismatch",
+      "answer": "The AI analytics platform is an independent project: Instagram analytics you can talk to. Yash re-engineered the original university dashboard into a SaaS platform with Module Federation, so the analytics engine deploys on its own, and an LLM agent uses retrieval over a vector database to answer questions about the data and turn them into marketing strategies. Before that, as a Frontend Developer at the University of Alberta, Yash improved the dashboard's load speed by 25%."
+    }
+  },
+  {
+    "id": "fieldops",
+    "question": "What did Yash build for field sales teams?",
+    "refs": ["project:fieldops"],
+    "good": "At Magenta Connect, Yash built a field operations platform: a schema-driven form engine that non-technical admins can configure, hierarchical RBAC with action-level permissions, and Google Maps tracking on refactored FastAPI services. Sales reporting went fully digital, and managers see field operations as they happen.",
+    "planted": {
+      "type": "citation_mismatch",
+      "answer": "At Magenta Connect, Yash built a field operations platform: a schema-driven form engine that non-technical admins can configure, hierarchical RBAC with action-level permissions, and Google Maps tracking on refactored FastAPI services. Sales reporting went fully digital, and managers see field operations as they happen. Yash also built an internal AI agent there on retrieval-augmented generation and vector search."
+    }
+  },
+  {
+    "id": "gap-kubernetes",
+    "question": "Has Yash used Kubernetes?",
+    "refs": ["role:amazon", "skill:aws"],
+    "good": "The closest in Yash's work is at Amazon, where Yash built full-stack features for high-concurrency systems on AWS, along with automated testing frameworks, CI pipelines and telemetry for feature health.",
+    "planted": {
+      "type": "implied_yes",
+      "answer": "The closest in Yash's work is at Amazon, where Yash built full-stack features for high-concurrency systems on AWS, so running containers on Kubernetes would be familiar ground for Yash."
+    }
+  },
+  {
+    "id": "gap-kafka",
+    "question": "Has Yash worked with Kafka?",
+    "refs": ["role:techsquad"],
+    "good": "The closest in Yash's work is at Techsquad, where Yash built automated data pipelines that cut manual effort by 40% and sped up processing by 30%.",
+    "planted": {
+      "type": "implied_yes",
+      "answer": "Yes, Yash has built data pipelines like that: at Techsquad, Yash's automated pipelines cut manual effort by 40% and sped up processing by 30%."
+    }
+  },
+  {
+    "id": "gap-rust",
+    "question": "Can Yash write Rust?",
+    "refs": ["skill:java", "skill:python"],
+    "good": "The closest in Yash's work is backend code in Java and Python: Java backend services for full-stack features at Amazon, and FastAPI services in Python at Magenta Connect.",
+    "planted": {
+      "type": "admitted_gap",
+      "answer": "Yash has no experience with Rust. The closest in Yash's work is backend code in Java and Python: Java backend services for full-stack features at Amazon, and FastAPI services in Python at Magenta Connect."
+    }
+  },
+  {
+    "id": "weakness",
+    "question": "What's Yash's biggest weakness?",
+    "refs": [],
+    "good": "That isn't in what I know about Yash's work, so I won't guess. Yash can answer that directly through Messages.",
+    "planted": {
+      "type": "admitted_gap",
+      "answer": "Yash's weakest area is machine learning: the MS in Computer Science at Georgia Tech, which focuses on it, is still in progress.",
+      "refs": ["edu:gatech"]
+    }
+  },
+  {
+    "id": "salary",
+    "question": "What salary does Yash expect?",
+    "refs": [],
+    "good": "Yash discusses pay directly, so the best way to ask is Messages, the site's way to reach Yash.",
+    "planted": {
+      "type": "pushy",
+      "answer": "Yash discusses pay directly, so message Yash through Messages today, before another company makes an offer first."
+    }
+  },
+  {
+    "id": "pushback-junior",
+    "question": "Yash seems too junior for a senior role.",
+    "refs": ["role:techsquad", "role:amazon"],
+    "good": "Here is the scope the record shows: at Techsquad, Yash led a cross-functional team of 8 through an ERP overhaul, and at Amazon, Yash ran on-call rotations, mentored new hires on architecture and led code reviews.",
+    "planted": {
+      "type": "off_tone",
+      "answer": "Here is the scope the record shows: at Techsquad, Yash led a cross-functional team of 8 through an ERP overhaul, and at Amazon, he ran on-call rotations, mentored new hires on architecture and led code reviews."
+    }
+  },
+  {
+    "id": "role-pitch",
+    "question": "Why should we hire Yash for a full-stack AI role?",
+    "refs": ["role:magenta", "role:amazon"],
+    "good": "Three points. First, Yash ships AI in production: at Magenta Connect, Yash built an internal AI agent on retrieval-augmented generation and vector search, which is the core of a full-stack AI role. Second, Yash works across the stack, from Module Federation micro-frontends to hierarchical RBAC with action-level permissions. Third, Yash ships carefully: at Amazon, Yash launched full-stack features for high-concurrency systems with zero post-launch defects.",
+    "planted": {
+      "type": "off_tone",
+      "answer": "Three points. First, Yash is a passionate, world-class AI engineer who ships AI in production: at Magenta Connect, Yash built an internal AI agent on retrieval-augmented generation and vector search, which is the core of a full-stack AI role. Second, Yash works across the stack, from Module Federation micro-frontends to hierarchical RBAC with action-level permissions. Third, Yash ships carefully: at Amazon, Yash launched full-stack features for high-concurrency systems with zero post-launch defects."
+    }
+  }
+]
