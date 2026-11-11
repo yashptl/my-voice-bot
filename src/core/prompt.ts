@@ -36,7 +36,7 @@ export function buildTail(o: { mode: ReplyMode; language: ReplyLanguage; boundar
  * words the model reads are the site's, not the visitor's (a sandwich against pasted instructions).
  */
 export function buildReminder(o: { language: ReplyLanguage }): string {
-  return `(Note from the site, not the visitor: reply in ${LANGUAGE_NAMES[o.language]}, in the reply style given above, following your rules, and end with the data line.)`;
+  return `(Note from the site, not the visitor: reply in ${LANGUAGE_NAMES[o.language]}, in the reply style given above, following your rules (including that, unless the visitor is pressing, you never remark that something is missing from the record, for example "isn't listed" or "the record doesn't show"), and end with the data line.)`;
 }
 
 /** `visitor_message` and its look-alikes: any run of whitespace, `_` or `-` between the words. */
