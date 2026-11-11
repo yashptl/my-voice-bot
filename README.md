@@ -100,7 +100,11 @@ The body is the kind, the UTC time and the reason, never visitor text. Without `
 
 ## Deploying
 
-1. Apply every migration to the real database, through the newest (`0006_gaps.sql`): `npx wrangler d1 migrations apply DB --remote`. The first `wrangler deploy` creates the database (no `database_id` in `wrangler.jsonc`); until the migrations are applied the assistant rests, because the ledger fails closed.
+Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangler deploy`. The Vite plugin builds the Worker into `dist/yashos_assistant/` with its own `wrangler.json`, and the scripts deploy that file. Because Vite's root is `playground/`, the plugin's redirect file lands in `playground/.wrangler/deploy/`, where `wrangler` won't use it. Other `wrangler` commands (`secret put`, `d1 migrations apply`, `d1 execute`) read `wrangler.jsonc` directly; add `--env staging` for the staging copy.
+
+**Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, a ceiling of 100 answers a day, no voice and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
+
+1. Create the production database once with `npx wrangler d1 create yashos-assistant`, and put its id in `wrangler.jsonc` as `database_id`. Then apply every migration, through the newest (`0006_gaps.sql`): `npx wrangler d1 migrations apply DB --remote`. Until the migrations are applied the assistant rests, because the ledger fails closed.
 2. Set the secrets with `npx wrangler secret put <NAME>`:
    - `TURNSTILE_SECRET`: the real secret for the site key, not the test one;
    - `IP_HASH_KEY`: `openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`;
@@ -108,6 +112,6 @@ The body is the kind, the UTC time and the reason, never visitor text. Without `
    - `ALERT_TO`: the address of the verified Email Routing destination.
 3. Verify that Email Routing destination in the Cloudflare dashboard, and keep `yashos.dev` onboarded for sending (`ALERT_FROM` is `assistant@yashos.dev`).
 4. Put a real Turnstile site key in the host page; the playground's test key only works with the test secret.
-5. Do not set `ASSISTANT_DEMO` in production. After `wrangler deploy`, check that `/assistant/health` says `ok: true` with nothing required missing.
+5. Do not set `ASSISTANT_DEMO` in production. After `npm run deploy`, check that `/assistant/health` says `ok: true` with nothing required missing.
 6. Check that the Rate Limiting binding works on the account's plan: an 11th `POST /assistant/session` from one IP within a minute should get `429`.
 7. Leave `ASSISTANT_MODE` at `text`. **Workers Paid** ($5 a month) is needed only before voice goes on: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Turn voice on only after confirming its ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.
