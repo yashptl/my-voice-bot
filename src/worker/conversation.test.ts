@@ -305,6 +305,26 @@ describe("Conversation POST /assistant/chat", () => {
     expect(refused.turnRows()).toEqual([]); // no model call, so nothing to log
   });
 
+  it("answers 503 resting, not a 500, and undoes the turn when a ceiling var is not a string or a whole number", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A JSON number is a valid ceiling and chat answers.
+    const num = await chatSetup({ vars: { DAILY_TURNS: 400 as unknown as string } });
+    const ok = await num.conversation.fetch(chat(num.token));
+    expect(ok.status).toBe(200);
+    await readEvents(ok);
+    // Anything else pauses (0), and whatever else throws inside the spend is a resting answer too.
+    for (const v of [{}, null, 1.5]) {
+      const h = await chatSetup({ vars: { DAILY_TURNS: v as unknown as string } });
+      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({ status: 503, body: { error: "resting" } });
+      expect(h.data.get("turnsStarted")).toBe(0);
+    }
+    const odd = await chatSetup({ vars: { DAILY_TURNS_PER_IP: { toString: () => "x" } as unknown as string } });
+    (odd.conversation as unknown as { env: { IP_HASH_KEY: unknown } }).env.IP_HASH_KEY = { throws: 1 };
+    expect(await json(await odd.conversation.fetch(chat(odd.token)))).toEqual({ status: 503, body: { error: "resting" } });
+    expect(odd.data.get("turnsStarted")).toBe(0);
+    expect((await odd.conversation.fetch(chat(odd.token))).status).toBe(503); // not stuck busy
+  });
+
   it("answers 429 limit once the visitor's IP has used its turns today, giving back everyone's and the conversation's", async () => {
     const sqlite = sqliteD1();
     const vars = { DAILY_TURNS_PER_IP: "1" };

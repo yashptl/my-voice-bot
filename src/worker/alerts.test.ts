@@ -83,6 +83,31 @@ describe("raiseAlert", () => {
     expect(await used(h.db, "alert:canary_failed", utcDay(NOW))).toBe(0);
   });
 
+  it("sends anyway when the claim fails with a database error, and logs that the claim failed", async () => {
+    const h = setup();
+    (h.env as { DB: unknown }).DB = {
+      prepare() {
+        throw new Error("D1 unavailable");
+      },
+    };
+    expect(await raiseAlert(h.env, "canary_failed", "ledger unavailable", h.log, NOW)).toBe("sent");
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.text).toContain("ledger unavailable");
+    expect(h.logs).toEqual([["error", "alert canary_failed claim failed, sending anyway: D1 unavailable"]]);
+    expect(JSON.stringify(h.logs)).not.toContain(TO);
+  });
+
+  it("still returns failed when the claim and the send both fail", async () => {
+    const h = setup({ fail: true });
+    (h.env as { DB: unknown }).DB = {
+      prepare() {
+        throw new Error("D1 unavailable");
+      },
+    };
+    expect(await raiseAlert(h.env, "slow", "r", h.log, NOW)).toBe("failed");
+    expect(h.sent).toEqual([]);
+  });
+
   it("covers the four kinds", async () => {
     const h = setup();
     const kinds: AlertKind[] = ["canary_failed", "slow", "resting", "misconfigured"];

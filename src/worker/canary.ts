@@ -27,7 +27,8 @@ export interface CanaryResult {
  * the per-visitor bucket "unknown". Ok when the answer had at least one sentence, a meta and a
  * turn.end whose record has no error. Not asked, with a reason: the assistant is off, or required
  * config is missing ("not configured"). Not asked, and ok: today's shared turns are used up
- * (`skipped: "resting"`), which is the assistant doing its job.
+ * (`skipped: "resting"`), which is the assistant doing its job; that needs this read to have succeeded.
+ * A 503 `resting` from the ask without that is a failure, "ledger unavailable"; the database is down.
  */
 export async function runCanary(env: Env, now: () => number = () => Date.now()): Promise<CanaryResult> {
   const startedAt = now();
@@ -51,7 +52,9 @@ export async function runCanary(env: Env, now: () => number = () => Date.now()):
     );
     if (res.status !== 200 || !res.body) {
       const error = ((await res.json().catch(() => null)) as { error?: unknown } | null)?.error;
-      if (res.status === 503 && error === "resting") return skipped(); // the last turn went between the check and the ask
+      // Used-up turns returned above, so a resting refusal here means the ledger is failing (or the last
+      // turn went between the read and the ask, which is rare enough to report).
+      if (res.status === 503 && error === "resting") return result("ledger unavailable");
       return result(`http ${res.status}${typeof error === "string" ? ` ${error}` : ""}`);
     }
     return result(await checkAnswer(res.body));

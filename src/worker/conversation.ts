@@ -12,7 +12,7 @@ import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
 import { recordGap, type Gap } from "./gap-log";
-import { AUDIO_BLOCK_SECONDS, release, reserve, spendTurn, voiceUnitResting } from "./ledger";
+import { AUDIO_BLOCK_SECONDS, release, reserve, spendTurn, voiceUnitResting, type TurnSpend } from "./ledger";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
@@ -234,7 +234,11 @@ export class Conversation extends DurableObject<Env> {
       const hash = await (this.hash ??= promptHash(buildStable(bundle)));
       const state = await this.loadState(log);
       if (!state.startTurn()) return json({ error: "limit" }, 429);
-      const spent = await spendTurn(this.env, clientIp(request), log);
+      // Whatever makes the spend throw, the turn is undone and the visitor hears "resting", not a 500.
+      const spent = await spendTurn(this.env, clientIp(request), log).catch((err: unknown): TurnSpend => {
+        log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
+        return "resting";
+      });
       if (spent !== "ok") {
         state.undoTurn();
         return spent === "limit" ? json({ error: "limit" }, 429) : json({ error: "resting" }, 503);

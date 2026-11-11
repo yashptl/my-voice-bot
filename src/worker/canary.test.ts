@@ -86,12 +86,25 @@ describe("runCanary", () => {
     expect(h.inits).toEqual([]);
   });
 
-  it("asks while turns are left, and counts a refusal that raced the last turn as resting too", async () => {
+  it("asks while turns are left", async () => {
     const h = setup({ usedToday: 399 });
     await h.ready;
     expect((await runCanary(h.env, h.now)).skipped).toBeUndefined();
-    const raced = setup({ reply: () => Response.json({ error: "resting" }, { status: 503 }) });
-    expect(await runCanary(raced.env, raced.now)).toEqual({ ok: true, ms: 450, reason: null, skipped: "resting" });
+  });
+
+  const resting = () => Response.json({ error: "resting" }, { status: 503 });
+
+  it("fails with 'ledger unavailable' on a 503 resting, since a skip needs its own read to show the turns used up", async () => {
+    const left = setup({ reply: resting });
+    expect(await runCanary(left.env, left.now)).toEqual({ ok: false, ms: 450, reason: "ledger unavailable" });
+    const down = setup({ reply: resting });
+    (down.env as { DB: unknown }).DB = {
+      prepare() {
+        throw new Error("D1 unavailable");
+      },
+    };
+    expect(await runCanary(down.env, down.now)).toEqual({ ok: false, ms: 450, reason: "ledger unavailable" });
+    expect(down.requests).toHaveLength(1); // it still asked, as visitors would
   });
 
   it("is ok when the answer has a sentence, a meta and a clean turn.end, timed end to end", async () => {

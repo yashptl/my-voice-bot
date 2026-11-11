@@ -111,13 +111,13 @@ export function turnsPerIp(env: Env, log: Log): number {
 }
 
 /**
- * A count var as a whole number. Missing: `fallback`. Set to anything else: 0, which pauses what
+ * A count var as a whole number, given as a string or a JSON number. Missing: `fallback`. Set to anything else: 0, which pauses what
  * it counts, and an error in the log, so a typo fails closed instead of quietly meaning the default.
  */
 function wholeVar(env: Env, name: CountVar, fallback: number, log: Log): number {
   const raw = env[name];
   if (raw === undefined) return fallback;
-  const value = raw.trim();
+  const value = String(raw).trim(); // wrangler.jsonc may hold a JSON number
   if (/^\d+$/.test(value)) return Number(value);
   log("error", `${name} is not a whole number; counting it as 0 (paused) until it is fixed`);
   return 0;

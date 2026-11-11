@@ -11,7 +11,8 @@ export type AlertKind = "canary_failed" | "slow" | "resting" | "misconfigured";
  * is the kind, the UTC time and `reason`, which must never hold visitor text. Returns "sent";
  * "already" when today's email for the kind went out; "unsent" without ALERT_TO or the ALERT_EMAIL
  * binding (a warning, and no claim, so fixing the config still gets its email); "failed" when
- * sending or the database failed (the claim is given back, so the next run tries again).
+ * sending failed (the claim is given back, so the next run tries again). If the claim itself fails with a
+ * database error, the email is sent anyway and the failure logged: an outage must not silence the alert.
  */
 export async function raiseAlert(
   env: Env,
@@ -28,11 +29,13 @@ export async function raiseAlert(
   }
   const unit = `alert:${kind}`;
   const day = utcDay(now);
+  let claimed = true;
   try {
     if (!(await spend(env.DB, unit, 1, 1, day)).ok) return "already";
   } catch (err) {
-    log("error", `alert ${kind} not sent: ${message(err)}`);
-    return "failed";
+    // A database that is down is the very outage to report: send unclaimed, at most hourly (the cron).
+    log("error", `alert ${kind} claim failed, sending anyway: ${message(err)}`);
+    claimed = false;
   }
   try {
     await binding.send({
@@ -44,7 +47,7 @@ export async function raiseAlert(
     return "sent";
   } catch (err) {
     log("error", `alert ${kind} not sent: ${message(err)}`);
-    await refund(env.DB, unit, 1, day).catch(() => {});
+    if (claimed) await refund(env.DB, unit, 1, day).catch(() => {});
     return "failed";
   }
 }

@@ -85,7 +85,7 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 
 `GET /assistant/health` returns `ok`, `mode`, `demo`, and `missing`: the names, never the values, of missing required config (`TURNSTILE_SECRET`, `IP_HASH_KEY`, and `MINIMAX_API_KEY` outside demo mode) and, separately, of optional config (`ALERT_TO`). `ok` is false, with status 503, while anything required is missing.
 
-**Canary.** Every hour (cron `17 * * * *`) the Worker asks "Where does Yash work now?" through `/assistant/chat`, the way a visitor does, and logs `canary ok in <ms> ms` or `canary failed: <reason>`. The reason is an HTTP status, an error code, a missing event, `not configured` or `assistant is off` (it does not ask while `ASSISTANT_MODE` is `off`), never answer text. It spends one of the day's turns; once they are used up it does not ask, logs `canary skipped: resting` and that is not a failure. It sends no `cf-connecting-ip`, so it counts against the per-IP bucket `"unknown"` (24 a day, well under 60). Its turns are tagged `source = 'canary'`. To run it under `npm run dev`, open `/cdn-cgi/local/scheduled` on the dev server.
+**Canary.** Every hour (cron `17 * * * *`) the Worker asks "Where does Yash work now?" through `/assistant/chat`, the way a visitor does, and logs `canary ok in <ms> ms` or `canary failed: <reason>`. The reason is an HTTP status, an error code, a missing event, `not configured` or `assistant is off` (it does not ask while `ASSISTANT_MODE` is `off`), never answer text. It spends one of the day's turns; once they are used up it does not ask, logs `canary skipped: resting` and that is not a failure. A 503 `resting` from the ask itself is a failure, `ledger unavailable` (the database is down). It sends no `cf-connecting-ip`, so it counts against the per-IP bucket `"unknown"` (24 a day, well under 60). Its turns are tagged `source = 'canary'`. To run it under `npm run dev`, open `/cdn-cgi/local/scheduled` on the dev server.
 
 **Alerts.** The cron emails the owner through the `ALERT_EMAIL` binding, from `ALERT_FROM` to the `ALERT_TO` secret, at most once per kind per UTC day (claimed in `daily` as `alert:<kind>` before sending):
 
@@ -96,7 +96,7 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 | `resting` | the day's shared turns are used up |
 | `misconfigured` | required config is missing (names listed) |
 
-The body is the kind, the UTC time and the reason, never visitor text. Without `ALERT_TO` or the binding, a warning is logged instead. If sending fails the claim is given back, so the next hour tries again. An assistant switched `off` on purpose raises nothing.
+The body is the kind, the UTC time and the reason, never visitor text. Without `ALERT_TO` or the binding, a warning is logged instead. If sending fails the claim is given back, so the next hour tries again. If the claim itself fails (the database is down), the email is sent anyway and the failure logged: at most one an hour during an outage. An assistant switched `off` on purpose raises nothing.
 
 ## Deploying
 
