@@ -6,7 +6,7 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
-import { spend, spendVisitor, utcDay } from "./ledger";
+import { reserveAudio, spend, spendVisitor, utcDay } from "./ledger";
 import { recordGap } from "./gap-log";
 import { recordTurn } from "./turn-log";
 
@@ -74,6 +74,7 @@ function setup(
     DAILY_VOICE_SECONDS: "1800",
     DAILY_TTS_CHARS: "60000",
     DAILY_TURNS_PER_IP: "60",
+    DAILY_VOICE_SECONDS_PER_IP: "600",
     TURNSTILE_SECRET: o.secret === null ? undefined : (o.secret ?? TURNSTILE_TEST_SECRET),
     IP_HASH_KEY: o.ipHashKey === null ? undefined : (o.ipHashKey ?? "test-key"),
     MINIMAX_API_KEY: o.minimaxKey === null ? undefined : (o.minimaxKey ?? "test-minimax-key"),
@@ -280,6 +281,16 @@ describe("POST /assistant/session", () => {
       fakeSiteverify({ success: true });
       expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: false });
     }
+  });
+
+  it("reports mode text for a visitor whose voice seconds are used up, and voice for everyone else", async () => {
+    const h = setup({ db: sqliteD1() });
+    h.env.DAILY_VOICE_SECONDS_PER_IP = "30";
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.8", 15, vi.fn());
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "voice" });
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.7", 15, vi.fn());
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "text", resting: false });
   });
 
   it("keeps mode text and off as they are", async () => {

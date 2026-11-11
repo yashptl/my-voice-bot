@@ -30,7 +30,7 @@ const rateLimited = () => json({ error: "rate_limited" }, 429, { "retry-after": 
  * everyone rather than skipping a check or serving scripted replies.
  * `resting` tells the client the day's shared turns are already used (or the ledger cannot be read,
  * which fails closed), so it can show the static card. `mode` is "text" instead of "voice" while
- * voice rests for the day (its audio or speech ceiling), so the client starts in text.
+ * voice rests for the day (its audio or speech ceiling, or this visitor's own audio seconds), so the client starts in text.
  */
 async function createSession(request: Request, env: Env): Promise<Response> {
   if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
@@ -52,7 +52,7 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   const [, resting, voiceResting] = await Promise.all([
     secretHash.then((hash) => env.CONVERSATION.get(env.CONVERSATION.idFromName(conversationId)).init(hash, expiresAt)),
     restingToday(env, log),
-    env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, log),
+    env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, clientIp(request), log),
   ]);
   const mode = voiceResting ? "text" : env.ASSISTANT_MODE;
   const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode, expiresAt, resting };

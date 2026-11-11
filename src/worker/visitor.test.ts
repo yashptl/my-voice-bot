@@ -28,4 +28,10 @@ describe("visitorKey", () => {
     ]);
     for (const other of others) expect(other).not.toBe(key);
   });
+
+  it("with a unit, is a different key for the same day and IP, so one table holds both", async () => {
+    const expected = createHmac("sha256", "test-key").update(`2026-11-08|${IP}|voice_seconds`).digest("hex");
+    expect(await visitorKey("test-key", "2026-11-08", IP, "voice_seconds")).toBe(expected);
+    expect(expected).not.toBe(await visitorKey("test-key", "2026-11-08", IP));
+  });
 });

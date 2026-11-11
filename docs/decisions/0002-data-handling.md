@@ -69,6 +69,7 @@ Not covered: Anthropic. The `anthropic-haiku` profile runs only in the probes, a
 | D1 `gaps` | Questions the knowledge only partly covered (coverage `adjacent` or `none`): the question as sent or transcribed, unredacted, plus the first 8 characters of the conversation id, mode, coverage, cited refs and time (`migrations/0006_gaps.sql`). Never the answer. Not written for the hourly canary | Yes | 30 days, deleted hourly |
 | D1 `daily` | Day, unit and count for the shared ceilings, and the `alert:<kind>` claims | No | 7 days |
 | D1 `daily_ip` | Turns per visitor per day, keyed by an HMAC-SHA256 of the day and client IP under the `IP_HASH_KEY` secret: no raw IP, and one day's rows cannot be matched to another's (`migrations/0005_daily_ip.sql`) | No | Deleted once its UTC day ends |
+| D1 `daily_ip` (voice) | Mic seconds reserved per visitor per day, in the same table under a key that also includes the unit: HMAC-SHA256 of `<day>\|<client IP>\|voice_seconds` with the same secret. No raw IP; no migration | No | Deleted once its UTC day ends |
 | Worker logs | Status codes, error codes, counts. By rule never visitor or answer text, keys or addresses | No | Per Workers Logs retention |
 
 Alert emails (kind, UTC time, reason code) never contain visitor text. Yash reads the gap log with `npm run gaps`.

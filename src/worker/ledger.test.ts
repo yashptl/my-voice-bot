@@ -7,7 +7,9 @@ import {
   pruneVisitors,
   refund,
   release,
+  releaseAudio,
   reserve,
+  reserveAudio,
   restingToday,
   spend,
   spendTurn,
@@ -16,6 +18,7 @@ import {
   used,
   utcDay,
   voiceRestingToday,
+  voiceSecondsPerIp,
 } from "./ledger";
 
 const DAY = "2026-11-08";
@@ -33,7 +36,7 @@ const brokenDb = () =>
     },
   }) as unknown as D1Database;
 
-type Vars = Partial<Pick<Env, "DAILY_TURNS" | "DAILY_VOICE_SECONDS" | "DAILY_TTS_CHARS" | "DAILY_TURNS_PER_IP" | "IP_HASH_KEY">>;
+type Vars = Partial<Pick<Env, "DAILY_TURNS" | "DAILY_VOICE_SECONDS" | "DAILY_TTS_CHARS" | "DAILY_TURNS_PER_IP" | "DAILY_VOICE_SECONDS_PER_IP" | "IP_HASH_KEY">>;
 const envOf = (DB: D1Database, vars: Vars = {}) => ({ DB, IP_HASH_KEY: "test-key", ...vars }) as unknown as Env;
 
 afterEach(() => {
@@ -388,28 +391,143 @@ describe("voiceRestingToday", () => {
   const today = () => utcDay(Date.now());
 
   it("is false while another audio block and another reply's speech both fit today", async () => {
-    expect(await voiceRestingToday(envOf(sqliteD1()), vi.fn())).toBe(false);
+    expect(await voiceRestingToday(envOf(sqliteD1()), IP, vi.fn())).toBe(false);
   });
 
   it("is true once less than one 15 s audio block is left", async () => {
     const db = sqliteD1();
     await spend(db, "voice_seconds", 6, 1800, today());
-    expect(await voiceRestingToday(envOf(db, { DAILY_VOICE_SECONDS: "21" }), vi.fn())).toBe(false);
-    expect(await voiceRestingToday(envOf(db, { DAILY_VOICE_SECONDS: "20" }), vi.fn())).toBe(true);
+    expect(await voiceRestingToday(envOf(db, { DAILY_VOICE_SECONDS: "21" }), IP, vi.fn())).toBe(false);
+    expect(await voiceRestingToday(envOf(db, { DAILY_VOICE_SECONDS: "20" }), IP, vi.fn())).toBe(true);
   });
 
   it("is true once less than one reply's 500 spoken characters is left", async () => {
     const db = sqliteD1();
     await spend(db, "tts_chars", 100, 60_000, today());
-    expect(await voiceRestingToday(envOf(db, { DAILY_TTS_CHARS: "600" }), vi.fn())).toBe(false);
-    expect(await voiceRestingToday(envOf(db, { DAILY_TTS_CHARS: "599" }), vi.fn())).toBe(true);
+    expect(await voiceRestingToday(envOf(db, { DAILY_TTS_CHARS: "600" }), IP, vi.fn())).toBe(false);
+    expect(await voiceRestingToday(envOf(db, { DAILY_TTS_CHARS: "599" }), IP, vi.fn())).toBe(true);
   });
 
   it("is true when either ceiling is 0, and when the database fails (fails closed)", async () => {
-    expect(await voiceRestingToday(envOf(sqliteD1(), { DAILY_VOICE_SECONDS: "0" }), vi.fn())).toBe(true);
-    expect(await voiceRestingToday(envOf(sqliteD1(), { DAILY_TTS_CHARS: "0" }), vi.fn())).toBe(true);
+    expect(await voiceRestingToday(envOf(sqliteD1(), { DAILY_VOICE_SECONDS: "0" }), IP, vi.fn())).toBe(true);
+    expect(await voiceRestingToday(envOf(sqliteD1(), { DAILY_TTS_CHARS: "0" }), IP, vi.fn())).toBe(true);
     const log = vi.fn();
-    expect(await voiceRestingToday(envOf(brokenDb()), log)).toBe(true);
+    expect(await voiceRestingToday(envOf(brokenDb()), IP, log)).toBe(true);
     expect(log).toHaveBeenCalledWith("error", "ledger failed: D1 unavailable");
+  });
+});
+
+const voiceKeyRows = (db: ReturnType<typeof sqliteD1>) => visitorRows(db).map((r) => ({ day: r.day, used: r.used }));
+
+describe("voiceSecondsPerIp", () => {
+  it("is 600 when missing, the number when whole, and 0 with an error logged when invalid", () => {
+    const log = vi.fn();
+    expect(voiceSecondsPerIp({} as Env, log)).toBe(600);
+    expect(voiceSecondsPerIp({ DAILY_VOICE_SECONDS_PER_IP: " 90 " } as Env, log)).toBe(90);
+    expect(voiceSecondsPerIp({ DAILY_VOICE_SECONDS_PER_IP: 90 as unknown as string } as Env, log)).toBe(90);
+    expect(log).not.toHaveBeenCalled();
+    expect(voiceSecondsPerIp({ DAILY_VOICE_SECONDS_PER_IP: "6OO" } as Env, log)).toBe(0);
+    expect(log).toHaveBeenCalledWith("error", expect.stringContaining("DAILY_VOICE_SECONDS_PER_IP"));
+  });
+});
+
+describe("reserveAudio and releaseAudio", () => {
+  const at = (hour: number) => vi.useFakeTimers({ now: Date.UTC(2026, 10, 8, hour), toFake: ["Date"] });
+
+  it("takes a block from everyone's seconds and the visitor's, keyed by a hash, never the IP", async () => {
+    at(12);
+    const db = sqliteD1();
+    expect(await reserveAudio(envOf(db), IP, 15, vi.fn())).toBe(DAY);
+    expect(await used(db, "voice_seconds", DAY)).toBe(15);
+    expect(visitorRows(db)).toEqual([{ day: DAY, ip_hash: expect.stringMatching(/^[0-9a-f]{64}$/), used: 15 }]);
+    expect(JSON.stringify(visitorRows(db))).not.toContain(IP);
+  });
+
+  it("keeps its row apart from the visitor's turns row, with no schema change", async () => {
+    at(12);
+    const db = sqliteD1();
+    const e = envOf(db);
+    await spendTurn(e, IP, vi.fn());
+    await reserveAudio(e, IP, 15, vi.fn());
+    expect(voiceKeyRows(db).map((r) => r.used).sort()).toEqual([1, 15]);
+  });
+
+  it("refuses once the visitor's own seconds run out while everyone's remain, and gives everyone's block back", async () => {
+    at(12);
+    const db = sqliteD1();
+    const e = envOf(db, { DAILY_VOICE_SECONDS_PER_IP: "30" });
+    expect(await reserveAudio(e, IP, 15, vi.fn())).toBe(DAY);
+    expect(await reserveAudio(e, IP, 15, vi.fn())).toBe(DAY);
+    expect(await reserveAudio(e, IP, 15, vi.fn())).toBeNull();
+    expect(await used(db, "voice_seconds", DAY)).toBe(30);
+    expect(voiceKeyRows(db)).toEqual([{ day: DAY, used: 30 }]);
+    expect(await reserveAudio(e, "203.0.113.8", 15, vi.fn())).toBe(DAY); // another visitor still has the day
+    expect(await used(db, "voice_seconds", DAY)).toBe(45);
+  });
+
+  it("refuses once everyone's seconds run out while the visitor's remain, and gives the visitor's block back", async () => {
+    at(12);
+    const db = sqliteD1();
+    const e = envOf(db, { DAILY_VOICE_SECONDS: "30" });
+    expect(await reserveAudio(e, IP, 15, vi.fn())).toBe(DAY);
+    expect(await reserveAudio(e, IP, 15, vi.fn())).toBe(DAY);
+    expect(await reserveAudio(e, "203.0.113.8", 15, vi.fn())).toBeNull();
+    expect(await used(db, "voice_seconds", DAY)).toBe(30);
+    expect(voiceKeyRows(db).map((r) => Number(r.used)).sort((a, b) => a - b)).toEqual([0, 30]);
+  });
+
+  it("fails closed without IP_HASH_KEY or when the database fails, giving back what succeeded, and logs why", async () => {
+    at(12);
+    const db = sqliteD1();
+    const log = vi.fn();
+    expect(await reserveAudio(envOf(db, { IP_HASH_KEY: "" }), IP, 15, log)).toBeNull();
+    expect(await used(db, "voice_seconds", DAY)).toBe(0);
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: IP_HASH_KEY is not set");
+    expect(await reserveAudio(envOf(brokenDb()), IP, 15, log)).toBeNull();
+  });
+
+  it("releases the unused part of both to the day reserved from, never the new day after midnight", async () => {
+    at(23);
+    vi.setSystemTime(Date.UTC(2026, 10, 8, 23, 59, 59));
+    const db = sqliteD1();
+    const e = envOf(db);
+    const day = await reserveAudio(e, IP, 15, vi.fn());
+    vi.setSystemTime(Date.UTC(2026, 10, 9, 0, 0, 1));
+    await reserveAudio(e, IP, 15, vi.fn()); // the new day's own block
+    await releaseAudio(e, IP, 11, day ?? "", vi.fn());
+    expect(rows(db)).toEqual([
+      { day: DAY, unit: "voice_seconds", used: 4 },
+      { day: "2026-11-09", unit: "voice_seconds", used: 15 },
+    ]);
+    expect(voiceKeyRows(db)).toEqual([
+      { day: DAY, used: 4 },
+      { day: "2026-11-09", used: 15 },
+    ]);
+  });
+
+  it("logs a failed release without throwing", async () => {
+    const log = vi.fn();
+    await releaseAudio(envOf(brokenDb()), IP, 5, DAY, log);
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: D1 unavailable");
+  });
+});
+
+describe("voiceRestingToday for a visitor", () => {
+  it("is true once the visitor has less than one block left, though everyone's seconds remain", async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 10, 8, 12), toFake: ["Date"] });
+    const db = sqliteD1();
+    const e = envOf(db, { DAILY_VOICE_SECONDS_PER_IP: "30" });
+    await reserveAudio(e, IP, 15, vi.fn());
+    expect(await voiceRestingToday(e, IP, vi.fn())).toBe(false);
+    await reserveAudio(e, IP, 15, vi.fn());
+    expect(await voiceRestingToday(e, IP, vi.fn())).toBe(true);
+    expect(await voiceRestingToday(e, "203.0.113.8", vi.fn())).toBe(false);
+  });
+
+  it("is true when the cap is 0, and fails closed without IP_HASH_KEY", async () => {
+    expect(await voiceRestingToday(envOf(sqliteD1(), { DAILY_VOICE_SECONDS_PER_IP: "0" }), IP, vi.fn())).toBe(true);
+    const log = vi.fn();
+    expect(await voiceRestingToday(envOf(sqliteD1(), { IP_HASH_KEY: "" }), IP, log)).toBe(true);
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: IP_HASH_KEY is not set");
   });
 });

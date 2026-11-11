@@ -22,6 +22,8 @@ export interface Env {
   DAILY_TTS_CHARS?: string;
   /** Model turns per visitor (client IP), text and voice together. */
   DAILY_TURNS_PER_IP?: string;
+  /** Mic seconds sent to Flux per visitor (client IP), so one visitor cannot use up the day's. Voice rests for them past it. */
+  DAILY_VOICE_SECONDS_PER_IP?: string;
   /** "1" serves scripted demo replies and silent speech when MINIMAX_API_KEY is missing (config.ts). Never set in production. */
   ASSISTANT_DEMO?: string;
   MINIMAX_API_KEY?: string;

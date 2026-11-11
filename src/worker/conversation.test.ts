@@ -612,6 +612,28 @@ describe("Conversation voice socket", () => {
     });
   }
 
+  it("with the visitor's own seconds used up while everyone's remain: accepts, says voice_resting and closes 1008", async () => {
+    const h = await chatSetup({ ai, vars: { DAILY_VOICE_SECONDS_PER_IP: "10" } });
+    const res = await h.conversation.fetch(upgrade(h.token));
+    expect(res.status).toBe(101);
+    const socket = servers.at(-1);
+    expect(socket?.events()).toEqual([{ type: "error", code: "voice_resting", message: expect.any(String) }]);
+    expect(socket?.closed).toEqual({ code: 1008, reason: "voice resting" });
+    expect(fluxes).toEqual([]);
+    expect(await h.usedToday("voice_seconds")).toBe(0); // everyone's block was given back
+    expect(h.visitorCounts()).toEqual([]); // a block bigger than the cap writes no row
+  });
+
+  it("reserves the first block from the visitor too, and gives the unused part of both back on close", async () => {
+    const h = await chatSetup({ ai });
+    const { socket } = await open(h);
+    expect(h.visitorCounts()).toEqual([15]);
+    socket.emit("close");
+    await vi.waitFor(() => expect(h.visitorCounts()).toEqual([15]));
+    await vi.waitFor(async () => expect(await h.usedToday("voice_seconds")).toBe(0));
+    await vi.waitFor(() => expect(h.visitorCounts()).toEqual([0]));
+  });
+
   it("replaces the old socket with a new one, closing the old with 4000 and giving back its audio", async () => {
     const h = await chatSetup({ ai });
     const first = await open(h);
@@ -663,7 +685,7 @@ describe("Conversation voice socket", () => {
     const { socket, flux } = await open(h);
     ask(flux, QUESTION);
     await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
-    expect(h.visitorCounts()).toEqual([1]);
+    expect(h.visitorCounts()).toEqual([1, 15]); // one turn, and the socket's first block of seconds
     expect(await json(await h.conversation.fetch(chat(h.token, { message: "And before that?" })))).toEqual({
       status: 429,
       body: { error: "limit" },

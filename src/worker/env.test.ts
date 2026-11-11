@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CEILINGS, DEFAULT_TURNS_PER_IP } from "./ledger";
+import { DEFAULT_CEILINGS, DEFAULT_TURNS_PER_IP, DEFAULT_VOICE_SECONDS_PER_IP } from "./ledger";
 
 /** wrangler.jsonc; its comments are whole lines, so dropping those leaves JSON. */
 function wrangler(): { vars: Record<string, string>; send_email?: Record<string, unknown>[] } {
@@ -13,8 +13,8 @@ function wrangler(): { vars: Record<string, string>; send_email?: Record<string,
 const vars = () => wrangler().vars;
 
 describe("wrangler.jsonc vars", () => {
-  it("start in text mode: voice is switched on in Phase 3", () => {
-    expect(vars().ASSISTANT_MODE).toBe("text");
+  it("keep voice on: the daily ceilings cap what it costs", () => {
+    expect(vars().ASSISTANT_MODE).toBe("voice");
   });
 
   it("set every daily ceiling to the default the code falls back to", () => {
@@ -23,9 +23,16 @@ describe("wrangler.jsonc vars", () => {
       DAILY_VOICE_SECONDS: String(DEFAULT_CEILINGS.voice_seconds),
       DAILY_TTS_CHARS: String(DEFAULT_CEILINGS.tts_chars),
       DAILY_TURNS_PER_IP: String(DEFAULT_TURNS_PER_IP),
+      DAILY_VOICE_SECONDS_PER_IP: String(DEFAULT_VOICE_SECONDS_PER_IP),
     });
     expect(DEFAULT_CEILINGS).toEqual({ turns: 400, voice_seconds: 1800, tts_chars: 60_000 });
     expect(DEFAULT_TURNS_PER_IP).toBe(60);
+    expect(DEFAULT_VOICE_SECONDS_PER_IP).toBe(600);
+  });
+
+  it("set the per-visitor voice cap in staging too", () => {
+    const staging = readFileSync("wrangler.jsonc", "utf8").split('"staging"')[1] ?? "";
+    expect(staging).toMatch(/"DAILY_VOICE_SECONDS_PER_IP": "600"/);
   });
 });
 

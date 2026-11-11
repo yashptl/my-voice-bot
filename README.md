@@ -51,9 +51,10 @@ All counts are per UTC day and live in D1. If D1 can't be reached, the assistant
 | Model turns, everyone | `DAILY_TURNS` = 400 | `/session` reports `resting: true`; `/chat`: 503 `resting`; voice: `error` `resting`, socket closes |
 | Mic seconds sent to Flux, everyone | `DAILY_VOICE_SECONDS` = 1800, reserved 15 s at a time | voice rests: `/session` returns `mode: "text"`; an open socket gets `error` `voice_resting` and closes; text carries on |
 | Characters sent to MiniMax speech, everyone | `DAILY_TTS_CHARS` = 60000, reserved 500 (one reply) at a time | voice rests, as above |
+| Mic seconds per visitor (client IP) | `DAILY_VOICE_SECONDS_PER_IP` = 600, reserved 15 s at a time with everyone's block | voice rests for that visitor, as for everyone's seconds, above |
 | Spoken reply | 500 characters | sentences past it arrive with `spoken: false`: captions only, never spoken |
 
-The visitor is the client IP, kept only as an HMAC of the day and IP under `IP_HASH_KEY`, so D1 never holds a raw IP. A turn is counted for the conversation first, then the visitor and everyone together at once; any refusal gives the others back. `ASSISTANT_MODE` is `text` by default, `voice` turns voice on, and `off` refuses everything (503).
+The visitor is the client IP, kept only as an HMAC of the day and IP under `IP_HASH_KEY`, so D1 never holds a raw IP. A turn is counted for the conversation first, then the visitor and everyone together at once; any refusal gives the others back. Each 15 s block of mic audio is reserved from everyone's seconds and the visitor's own at once, under a second `daily_ip` row keyed by an HMAC that includes the unit; if either refuses, voice rests as above (at upgrade: the socket is accepted, gets `voice_resting` and closes 1008; `/session` says `mode: "text"` for that visitor), and the one that succeeded is given back. On close the unused part goes back to both, only to the same UTC day. `ASSISTANT_MODE` is `voice` by default, `text` turns voice off, and `off` refuses everything (503).
 
 ## Where data lives
 
@@ -63,7 +64,7 @@ The visitor is the client IP, kept only as an HMAC of the day and IP under `IP_H
 | D1 `turns` | Measurements per turn: ids, timings, tokens, cost, coverage, gate and grounding counts. No question or answer text | 30 days |
 | D1 `gaps` | Questions the knowledge only partly covered, as the visitor sent or said them, unredacted, with the first 8 characters of the conversation id, mode, coverage and cited refs. No answers | 30 days |
 | D1 `daily` | Counts per unit per day, and the alert claims (`alert:<kind>`) | 7 days |
-| D1 `daily_ip` | Turns per visitor per day, keyed by an HMAC of the day and IP | Until its UTC day ends |
+| D1 `daily_ip` | Turns and mic seconds per visitor per day, each keyed by an HMAC of the day and IP (seconds: with the unit too) | Until its UTC day ends |
 | Worker logs | Operational lines (status codes, error codes, counts). Never visitor or answer text, keys or addresses | Per the account's Workers Logs retention |
 
 Every vendor's handling of visitor data is in [docs/decisions/0002-data-handling.md](docs/decisions/0002-data-handling.md). The hourly cron does all the deleting except the Durable Object's own alarm.
@@ -102,7 +103,7 @@ The body is the kind, the UTC time and the reason, never visitor text. Without `
 
 Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangler deploy`. The Vite plugin builds the Worker into `dist/yashos_assistant/` with its own `wrangler.json`, and the scripts deploy that file. Because Vite's root is `playground/`, the plugin's redirect file lands in `playground/.wrangler/deploy/`, where `wrangler` won't use it. Other `wrangler` commands (`secret put`, `d1 migrations apply`, `d1 execute`) read `wrangler.jsonc` directly; add `--env staging` for the staging copy.
 
-**Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, a ceiling of 100 answers a day, no voice and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
+**Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, voice on, with ceilings of 100 answers, 1,200 s of listening and 30,000 spoken characters a day (and 600 s of listening per visitor), and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
 
 1. Create the production database once with `npx wrangler d1 create yashos-assistant`, and put its id in `wrangler.jsonc` as `database_id`. Then apply every migration, through the newest (`0006_gaps.sql`): `npx wrangler d1 migrations apply DB --remote`. Until the migrations are applied the assistant rests, because the ledger fails closed.
 2. Set the secrets with `npx wrangler secret put <NAME>`:
@@ -114,4 +115,4 @@ Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangl
 4. Put a real Turnstile site key in the host page; the playground's test key only works with the test secret.
 5. Do not set `ASSISTANT_DEMO` in production. After `npm run deploy`, check that `/assistant/health` says `ok: true` with nothing required missing.
 6. Check that the Rate Limiting binding works on the account's plan: an 11th `POST /assistant/session` from one IP within a minute should get `429`.
-7. Leave `ASSISTANT_MODE` at `text`. **Workers Paid** ($5 a month) is needed only before voice goes on: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Turn voice on only after confirming its ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.
+7. `ASSISTANT_MODE` is `voice` in `wrangler.jsonc`, so **Workers Paid** ($5 a month) is needed now: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Confirm the voice ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.

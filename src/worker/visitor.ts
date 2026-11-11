@@ -6,11 +6,12 @@ export function clientIp(request: Request): string {
 /**
  * The key of a visitor's daily count: HMAC-SHA256 of `<day>|<ip>` under `secret` (IP_HASH_KEY), as
  * hex. D1 never holds the IP itself, and the day in the message means one day's keys cannot be
- * matched to another's.
+ * matched to another's. A `unit` (a count other than model turns) is part of the message, so its
+ * row is a different key in the same table.
  */
-export async function visitorKey(secret: string, day: string, ip: string): Promise<string> {
+export async function visitorKey(secret: string, day: string, ip: string, unit?: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`${day}|${ip}`)));
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(unit ? `${day}|${ip}|${unit}` : `${day}|${ip}`)));
   return Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
 }

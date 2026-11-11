@@ -12,7 +12,7 @@ import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
 import { recordGap, type Gap } from "./gap-log";
-import { AUDIO_BLOCK_SECONDS, release, reserve, spendTurn, voiceUnitResting, type TurnSpend } from "./ledger";
+import { AUDIO_BLOCK_SECONDS, release, releaseAudio, reserve, reserveAudio, spendTurn, voiceUnitResting, type TurnSpend } from "./ledger";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
@@ -118,7 +118,7 @@ export class Conversation extends DurableObject<Env> {
     const ip = clientIp(request);
     const providers = buildProviders(this.env);
     const state = await this.loadState(log);
-    const audio = await this.reserveFirstAudio(log);
+    const audio = await this.reserveFirstAudio(ip, log);
     const pair = new WebSocketPair();
     const client = pair[0];
     const socket = pair[1];
@@ -151,8 +151,10 @@ export class Conversation extends DurableObject<Env> {
       state,
       ledger: {
         spendTurn: () => spendTurn(this.env, ip, log),
-        reserve: (unit, n) => reserve(this.env, unit, n, log),
-        release: (unit, n, day) => void release(this.env, unit, n, day, log),
+        // Mic seconds are charged to the visitor as well as to everyone (ledger.ts reserveAudio).
+        reserve: (unit, n) => (unit === "voice_seconds" ? reserveAudio(this.env, ip, n, log) : reserve(this.env, unit, n, log)),
+        release: (unit, n, day) =>
+          void (unit === "voice_seconds" ? releaseAudio(this.env, ip, n, day, log) : release(this.env, unit, n, day, log)),
       },
       audioReserved: audio,
       expiresAt,
@@ -196,16 +198,17 @@ export class Conversation extends DurableObject<Env> {
 
   /**
    * The socket's first block of the day's mic audio, reserved before it is accepted. Null when voice
-   * rests for the day: no block left, or not one reply's speech (or the database fails: fails closed).
+   * rests for the day: no block left, for everyone or for this visitor, or not one reply's speech
+   * (or the database fails: fails closed).
    */
-  private async reserveFirstAudio(log: Log): Promise<{ day: string; seconds: number } | null> {
+  private async reserveFirstAudio(ip: string, log: Log): Promise<{ day: string; seconds: number } | null> {
     const [day, speechResting] = await Promise.all([
-      reserve(this.env, "voice_seconds", AUDIO_BLOCK_SECONDS, log),
+      reserveAudio(this.env, ip, AUDIO_BLOCK_SECONDS, log),
       voiceUnitResting(this.env, "tts_chars", log),
     ]);
     if (day === null) return null;
     if (!speechResting) return { day, seconds: AUDIO_BLOCK_SECONDS };
-    await release(this.env, "voice_seconds", AUDIO_BLOCK_SECONDS, day, log);
+    await releaseAudio(this.env, ip, AUDIO_BLOCK_SECONDS, day, log);
     return null;
   }
 

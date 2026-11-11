@@ -32,9 +32,9 @@
   // the verified Email Routing destination for alerts (optional: without it alerts are only logged).
   // Never set ASSISTANT_DEMO here: "1" serves scripted demo replies and is for .dev.vars only.
   "vars": {
-    // Text first. Voice is switched on in Phase 3, once its daily ceilings below are confirmed
-    // against the Workers AI and MiniMax dashboards.
-    "ASSISTANT_MODE": "text",
+    // Voice is on at all times; the daily ceilings below cap what it costs. Past a voice ceiling,
+    // voice rests until midnight UTC and the assistant carries on in text. Needs Workers Paid.
+    "ASSISTANT_MODE": "voice",
     "LLM_PROFILE": "minimax-flash",
     "TTS_VOICE": "English_FriendlyPerson",
     "ALERT_FROM": "assistant@yashos.dev",
@@ -48,13 +48,16 @@
     // Characters sent to MiniMax speech, for everyone together, reserved 500 (one reply) at a time.
     "DAILY_TTS_CHARS": "60000",
     // Model turns per visitor (client IP), text and voice together, so one visitor can't use up the day.
-    "DAILY_TURNS_PER_IP": "60"
+    "DAILY_TURNS_PER_IP": "60",
+    // Mic seconds per visitor (client IP), reserved with the global blocks above, so one visitor can't
+    // use up the day's listening. Past it, voice rests for that visitor until midnight UTC.
+    "DAILY_VOICE_SECONDS_PER_IP": "600"
   },
   "observability": { "enabled": true },
   // A test copy on workers.dev, for measuring from Cloudflare's network and rehearsing deploys.
-  // Build with `CLOUDFLARE_ENV=staging npm run build`, then `npx wrangler deploy`. It uses
-  // Turnstile's test secret, so anyone with the URL can use it: the daily ceiling is low. Bindings
-  // and vars are not inherited, so they are all repeated here; no alert email binding.
+  // Deploy with `npm run deploy:staging`. It uses Turnstile's test secret, so anyone with the URL
+  // can use it: its daily ceilings are lower. Bindings and vars are not inherited, so they are all
+  // repeated here; no alert email binding.
   "env": {
     "staging": {
       "name": "yashos-assistant-staging",
@@ -75,13 +78,14 @@
         { "name": "RL_SESSION", "namespace_id": "2002", "simple": { "limit": 10, "period": 60 } }
       ],
       "vars": {
-        "ASSISTANT_MODE": "text",
+        "ASSISTANT_MODE": "voice",
         "LLM_PROFILE": "minimax-flash",
         "TTS_VOICE": "English_FriendlyPerson",
         "DAILY_TURNS": "100",
-        "DAILY_VOICE_SECONDS": "0",
-        "DAILY_TTS_CHARS": "0",
+        "DAILY_VOICE_SECONDS": "1200",
+        "DAILY_TTS_CHARS": "30000",
         "DAILY_TURNS_PER_IP": "60",
+        "DAILY_VOICE_SECONDS_PER_IP": "600",
         "ALERT_FROM": "assistant@yashos.dev"
       }
     }

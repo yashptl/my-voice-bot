@@ -15,8 +15,8 @@ TURNSTILE_SECRET=1x0000000000000000000000000000000AA
 # Worker secret (`openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`). Without it,
 # /assistant/session answers 503 and every answer fails closed.
 IP_HASH_KEY=local-test-only-not-a-secret
-# Voice is off by default (wrangler.jsonc). To try it locally, uncomment this line.
-# ASSISTANT_MODE=voice
+# Voice is on by default (wrangler.jsonc). To try text only locally, uncomment this line.
+# ASSISTANT_MODE=text
 # Alert emails (production secret, the owner's verified Email Routing destination). Leave empty here:
 # without it alerts are only logged.
 ALERT_TO=

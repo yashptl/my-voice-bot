@@ -11,13 +11,15 @@ export type VoiceUnit = Exclude<LedgerUnit, "turns">;
 export const DEFAULT_CEILINGS: Readonly<Record<LedgerUnit, number>> = { turns: 400, voice_seconds: 1800, tts_chars: 60_000 };
 /** Model turns per visitor (client IP) per day when DAILY_TURNS_PER_IP is missing. */
 export const DEFAULT_TURNS_PER_IP = 60;
+/** Mic seconds per visitor (client IP) per day when DAILY_VOICE_SECONDS_PER_IP is missing. */
+export const DEFAULT_VOICE_SECONDS_PER_IP = 600;
 
 const CEILING_VARS = {
   turns: "DAILY_TURNS",
   voice_seconds: "DAILY_VOICE_SECONDS",
   tts_chars: "DAILY_TTS_CHARS",
 } as const satisfies Record<LedgerUnit, keyof Env>;
-type CountVar = (typeof CEILING_VARS)[LedgerUnit] | "DAILY_TURNS_PER_IP";
+type CountVar = (typeof CEILING_VARS)[LedgerUnit] | "DAILY_TURNS_PER_IP" | "DAILY_VOICE_SECONDS_PER_IP";
 
 /** Mic audio is reserved from `voice_seconds` this many seconds at a time (voice-loop.ts). */
 export const AUDIO_BLOCK_SECONDS = 15;
@@ -49,13 +51,13 @@ RETURNING used`;
 /** Only that day's row, which a refund never creates or takes below 0. */
 const REFUND = "UPDATE daily SET used = MAX(0, used - ?3) WHERE day = ?1 AND unit = ?2";
 
-/** SPEND for one visitor's model turns: one at a time, up to `?3`. */
+/** SPEND for one visitor's count (turns, or seconds under a key that includes the unit): `?4` at a time, up to `?3`. */
 const SPEND_VISITOR = `
-INSERT INTO daily_ip (day, ip_hash, used) SELECT ?1, ?2, 1 WHERE 1 <= ?3
-ON CONFLICT (day, ip_hash) DO UPDATE SET used = used + 1 WHERE used + 1 <= ?3
+INSERT INTO daily_ip (day, ip_hash, used) SELECT ?1, ?2, ?4 WHERE ?4 <= ?3
+ON CONFLICT (day, ip_hash) DO UPDATE SET used = used + ?4 WHERE used + ?4 <= ?3
 RETURNING used`;
 
-const REFUND_VISITOR = "UPDATE daily_ip SET used = MAX(0, used - 1) WHERE day = ?1 AND ip_hash = ?2";
+const REFUND_VISITOR = "UPDATE daily_ip SET used = MAX(0, used - ?3) WHERE day = ?1 AND ip_hash = ?2";
 
 type Spent = { ok: true; used: number } | { ok: false };
 
@@ -79,14 +81,20 @@ export async function used(db: D1Database, unit: string, day: string): Promise<n
   return row?.used ?? 0;
 }
 
-/** Spends one of the visitor's (`key`, from visitorKey) model turns for `day`, up to `ceiling`. */
-export async function spendVisitor(db: D1Database, key: string, ceiling: number, day: string): Promise<Spent> {
-  const row = await db.prepare(SPEND_VISITOR).bind(day, key, ceiling).first<{ used: number }>();
+/** Spends `n` (one model turn, by default) of the visitor's (`key`, from visitorKey) count for `day`, up to `ceiling`. */
+export async function spendVisitor(db: D1Database, key: string, ceiling: number, day: string, n = 1): Promise<Spent> {
+  const row = await db.prepare(SPEND_VISITOR).bind(day, key, ceiling, n).first<{ used: number }>();
   return row ? { ok: true, used: row.used } : { ok: false };
 }
 
-export async function refundVisitor(db: D1Database, key: string, day: string): Promise<void> {
-  await db.prepare(REFUND_VISITOR).bind(day, key).run();
+export async function refundVisitor(db: D1Database, key: string, day: string, n = 1): Promise<void> {
+  await db.prepare(REFUND_VISITOR).bind(day, key, n).run();
+}
+
+/** The visitor's count under `key` for `day` so far; 0 when nothing was spent. */
+async function usedVisitor(db: D1Database, key: string, day: string): Promise<number> {
+  const row = await db.prepare("SELECT used FROM daily_ip WHERE day = ?1 AND ip_hash = ?2").bind(day, key).first<{ used: number }>();
+  return row?.used ?? 0;
 }
 
 /** Deletes the counts of days that began more than DAILY_RETENTION_DAYS ago; returns how many rows went. */
@@ -108,6 +116,11 @@ export function ceiling(env: Env, unit: LedgerUnit, log: Log): number {
 /** Model turns per visitor per day, from DAILY_TURNS_PER_IP (see wholeVar). */
 export function turnsPerIp(env: Env, log: Log): number {
   return wholeVar(env, "DAILY_TURNS_PER_IP", DEFAULT_TURNS_PER_IP, log);
+}
+
+/** Mic seconds per visitor per day, from DAILY_VOICE_SECONDS_PER_IP (see wholeVar). */
+export function voiceSecondsPerIp(env: Env, log: Log): number {
+  return wholeVar(env, "DAILY_VOICE_SECONDS_PER_IP", DEFAULT_VOICE_SECONDS_PER_IP, log);
 }
 
 /**
@@ -151,10 +164,41 @@ export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpe
   return visitor === "refused" && everyone === "ok" ? "limit" : "resting";
 }
 
-async function keyFor(env: Env, day: string, ip: string): Promise<string> {
+async function keyFor(env: Env, day: string, ip: string, unit?: string): Promise<string> {
   const secret = env.IP_HASH_KEY?.trim();
   if (!secret) throw new Error("IP_HASH_KEY is not set");
-  return visitorKey(secret, day, ip);
+  return visitorKey(secret, day, ip, unit);
+}
+
+/**
+ * Takes `n` seconds of mic audio ahead of use from everyone's `voice_seconds` and from the visitor's
+ * own (DAILY_VOICE_SECONDS_PER_IP, a daily_ip row keyed with the unit), concurrently. The day it came
+ * from, for `releaseAudio`; null when either is refused or fails (fails closed), the other given back.
+ */
+export async function reserveAudio(env: Env, ip: string, n: number, log: Log): Promise<string | null> {
+  const day = utcDay(Date.now());
+  const key = keyFor(env, day, ip, "voice_seconds");
+  const [visitor, everyone] = await Promise.all([
+    outcome(
+      key.then((k) => spendVisitor(env.DB, k, voiceSecondsPerIp(env, log), day, n)),
+      log,
+    ),
+    outcome(spend(env.DB, "voice_seconds", n, ceiling(env, "voice_seconds", log), day), log),
+  ]);
+  if (visitor === "ok" && everyone === "ok") return day;
+  await Promise.all([
+    visitor === "ok" && quietly(key.then((k) => refundVisitor(env.DB, k, day, n)), log),
+    everyone === "ok" && quietly(refund(env.DB, "voice_seconds", n, day), log),
+  ]);
+  return null;
+}
+
+/** Gives back `n` seconds of what `reserveAudio` took on `day`, to both. A failure is logged: the reservation then stands. */
+export async function releaseAudio(env: Env, ip: string, n: number, day: string, log: Log): Promise<void> {
+  await Promise.all([
+    quietly(keyFor(env, day, ip, "voice_seconds").then((k) => refundVisitor(env.DB, k, day, n)), log),
+    quietly(refund(env.DB, "voice_seconds", n, day), log),
+  ]);
 }
 
 /**
@@ -194,9 +238,25 @@ export async function voiceUnitResting(env: Env, unit: VoiceUnit, log: Log): Pro
   }
 }
 
-/** Whether voice rests today: its next audio block or its next reply's speech would pass a ceiling. */
-export async function voiceRestingToday(env: Env, log: Log): Promise<boolean> {
-  const resting = await Promise.all([voiceUnitResting(env, "voice_seconds", log), voiceUnitResting(env, "tts_chars", log)]);
+/** Whether the visitor has less than one audio block of today's (UTC) own seconds left. True when the database fails or IP_HASH_KEY is missing. */
+async function visitorVoiceResting(env: Env, ip: string, log: Log): Promise<boolean> {
+  try {
+    const day = utcDay(Date.now());
+    const spent = await usedVisitor(env.DB, await keyFor(env, day, ip, "voice_seconds"), day);
+    return spent + AUDIO_BLOCK_SECONDS > voiceSecondsPerIp(env, log);
+  } catch (err) {
+    logFailure(log, err);
+    return true;
+  }
+}
+
+/** Whether voice rests today for this visitor: its next audio block or its next reply's speech would pass a ceiling, everyone's or the visitor's. */
+export async function voiceRestingToday(env: Env, ip: string, log: Log): Promise<boolean> {
+  const resting = await Promise.all([
+    voiceUnitResting(env, "voice_seconds", log),
+    voiceUnitResting(env, "tts_chars", log),
+    visitorVoiceResting(env, ip, log),
+  ]);
   return resting.some(Boolean);
 }
 
