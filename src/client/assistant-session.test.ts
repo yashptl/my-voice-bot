@@ -514,6 +514,49 @@ describe("reset and dispose", () => {
   });
 });
 
+describe("a stale mint", () => {
+  function gated() {
+    const gates: ((token: string) => void)[] = [];
+    const s = new AssistantSession({
+      baseUrl: BASE,
+      turnstileToken: () => new Promise<string>((resolve) => gates.push(resolve)),
+      fetch: fakeFetch,
+      now: () => t,
+    });
+    return { s, gates };
+  }
+
+  it("does not clear the current mint, so no second token is needed", async () => {
+    const { s, gates } = gated();
+    const old = s.start();
+    s.reset();
+    const current = s.start();
+    expect(gates).toHaveLength(2);
+    gates[0]!("a");
+    await old;
+    const third = s.start(); // the current mint is still in flight: joins it
+    expect(gates).toHaveLength(2);
+    gates[1]!("b");
+    await Promise.all([current, third]);
+    expect(sessionCalls).toBe(2);
+    expect(s.snapshot.status).toBe("ready");
+  });
+
+  it("does not set the session after a reset", async () => {
+    const { s, gates } = gated();
+    const old = s.start();
+    s.reset();
+    gates[0]!("a");
+    await old;
+    expect(s.snapshot.status).toBe("idle");
+    const next = s.start();
+    expect(gates).toHaveLength(2); // the stale result was not kept as the session
+    gates[1]!("b");
+    await next;
+    expect(s.snapshot.status).toBe("ready");
+  });
+});
+
 describe("voice", () => {
   const READY = { type: "ready", protocol: PROTOCOL_VERSION, mode: "voice", audio: VOICE_FORMAT };
 
@@ -596,12 +639,56 @@ describe("voice", () => {
     expect(sockets).toHaveLength(1); // voice cannot be started again
   });
 
-  it("puts other voice errors on the answer in progress", async () => {
+  it("a non-fatal voice error mid-turn becomes a notice and the answer carries on", async () => {
     const { s, ws } = await voiceReady();
     ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
-    ws.receive({ type: "error", code: "provider", message: "" });
-    expect(s.snapshot.messages[1]).toMatchObject({ error: "provider", pending: false });
+    ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+    ws.receive({ type: "error", code: "provider", message: "Speech failed; the answer continues as text." });
+    expect(s.snapshot.notice).toBe("Speech failed; the answer continues as text.");
+    expect(s.snapshot.messages[1]).toMatchObject({ error: null, pending: true });
+    ws.receive({ type: "sentence", turnId: "t1", id: 1, text: "Two." });
+    ws.receive({ type: "turn.end", turnId: "t1", record: RECORD });
+    expect(s.snapshot.messages[1]).toMatchObject({ text: "One. Two.", error: null, pending: false });
     expect(s.snapshot.voice.state).not.toBe("off");
+  });
+
+  it.each(["protocol", "rate_limited", "busy"] as const)("treats %s as a notice too", async (code) => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "error", code, message: "Heads up." });
+    expect(s.snapshot.notice).toBe("Heads up.");
+    expect(s.snapshot.messages[1]).toMatchObject({ error: null, pending: true });
+  });
+
+  it.each(["auth", "internal"] as const)("ends the answer in progress on %s", async (code) => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+    ws.receive({ type: "error", code, message: "" });
+    ws.receive({ type: "sentence", turnId: "t1", id: 1, text: "Two." });
+    expect(s.snapshot.messages[1]).toMatchObject({ text: "One.", error: code, pending: false });
+  });
+
+  it("a limit outside a turn ends the conversation", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "error", code: "limit", message: "" });
+    expect(s.snapshot.limitReached).toBe(true);
+    expect(s.snapshot.notice).toMatch(/conversation is done/i);
+    expect(s.snapshot.notice).not.toMatch(/start voice again/i);
+  });
+
+  it("resting outside a turn sets status resting", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "error", code: "resting", message: "" });
+    expect(s.snapshot.status).toBe("resting");
+  });
+
+  it("a limit in a turn ends the answer and the conversation", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "error", code: "limit", message: "" });
+    expect(s.snapshot.limitReached).toBe(true);
+    expect(s.snapshot.messages[1]).toMatchObject({ error: "limit", pending: false });
   });
 
   it("stopVoice closes the socket and keeps the messages", async () => {

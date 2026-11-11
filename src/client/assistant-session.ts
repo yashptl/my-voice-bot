@@ -67,6 +67,7 @@ const RENEWED = "This conversation was renewed, so earlier questions won't be re
 const VOICE_RESTING = "Voice is resting for today. Answers continue as text.";
 const VOICE_FAILED = "Voice couldn't connect. You can keep typing.";
 const VOICE_DROPPED = "Voice disconnected. You can keep typing, or start voice again.";
+const LIMIT_REACHED = "This conversation is done.";
 const NO_MIC = "The microphone isn't available. You can keep typing.";
 
 const INITIAL: AssistantSnapshot = {
@@ -225,13 +226,7 @@ export class AssistantSession {
       voice.on("sources", (e) => this.onVoiceEvent(e)),
       voice.on("turn.end", (e) => this.onVoiceEvent(e)),
       voice.on("turn.interrupted", (e) => this.onVoiceEvent(e)),
-      voice.on("error", (e) => {
-        if (e.code === "voice_resting") {
-          this.set({ mode: "text" });
-          return this.endVoice(VOICE_RESTING);
-        }
-        this.onEvent(this.voiceCurrent, e);
-      }),
+      voice.on("error", (e) => this.onVoiceError(e)),
     ];
     try {
       await voice.connect(() => this.ensureSession(), this.baseUrl);
@@ -279,8 +274,12 @@ export class AssistantSession {
   private async ensureSession(renew = false): Promise<SessionResponse> {
     const session = this.session;
     if (session && !renew && session.expiresAt - this.now() >= SESSION_MARGIN_MS) return session;
-    this.minting ??= this.mint().finally(() => (this.minting = null));
-    return this.minting;
+    if (this.minting) return this.minting;
+    const minting = this.mint().finally(() => {
+      if (this.minting === minting) this.minting = null; // not a newer mint, after reset()
+    });
+    this.minting = minting;
+    return minting;
   }
 
   private async mint(): Promise<SessionResponse> {
@@ -349,6 +348,24 @@ export class AssistantSession {
         this.fail(id, e.code);
         break;
     }
+  }
+
+  /**
+   * Only these voice errors end the current answer; any other (a failed speech stream, a bad message,
+   * a rate limit) is a notice, and the answer's later sentences and turn.end still arrive.
+   */
+  private onVoiceError(e: Extract<ServerEvent, { type: "error" }>): void {
+    if (e.code === "voice_resting") {
+      this.set({ mode: "text" });
+      return this.endVoice(VOICE_RESTING);
+    }
+    const ends = e.code === "limit" || e.code === "resting" || e.code === "auth" || e.code === "internal";
+    if (!ends) return this.set({ notice: e.message });
+    if (this.voiceCurrent !== null) return this.fail(this.voiceCurrent, e.code);
+    // Outside a turn: the session state still changes.
+    if (e.code === "limit") this.set({ limitReached: true, notice: LIMIT_REACHED });
+    else if (e.code === "resting") this.set({ status: "resting" });
+    else this.set({ notice: e.message });
   }
 
   private onVoiceEvent(e: Extract<ServerEvent, { turnId: string }>): void {
