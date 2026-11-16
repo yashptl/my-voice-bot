@@ -30,7 +30,7 @@ export async function watch(env: Env): Promise<void> {
     r = await runCanary(env);
   }
   /** The first run's failure, when the second run could not confirm or repeat it. */
-  const droppedFirst = () => (first ? raiseAlert(env, "answer_failed", `canary failed once, then passed: ${first.reason ?? "unknown"}`, log) : undefined);
+  const droppedFirst = () => (first ? raiseAlert(env, "answer_failed", `canary failed once: ${first.reason ?? "unknown"}`, log) : undefined);
   if (r.skipped === "resting") {
     console.info("canary skipped: resting");
     await raiseAlert(env, "resting", "the day's shared turns are used up", log);

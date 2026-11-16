@@ -101,7 +101,7 @@ const INITIAL: AssistantSnapshot = {
 /** What a turn record's error says about the model: its timeout, any other model failure, or nothing. */
 function modelFailure(recordError: string | null): MessageError | null {
   if (recordError === null || !recordError.startsWith("llm_")) return null;
-  return recordError.startsWith("llm_timeout_") ? "timeout" : "provider";
+  return recordError.startsWith("llm_timeout") ? "timeout" : "provider";
 }
 
 /**
