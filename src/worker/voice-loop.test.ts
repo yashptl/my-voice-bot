@@ -728,7 +728,9 @@ describe("VoiceLoop failed answers", () => {
     await vi.runAllTimersAsync();
     expect(of(h.out, "error")).toEqual([expect.objectContaining({ code: "resting", reason: "outage" })]);
     expect(records(h.out)).toMatchObject([{ error: "llm_auth", interrupted: false }]);
-    expect(h.closes).toEqual([]);
+    // The record is written first, then the conversation ends like a refused turn: the socket and mic do not stay open.
+    expect(kinds(h.out).slice(-3)).toEqual(["error:resting", "turn.end", "state:listening"]);
+    expect(h.closes).toEqual([{ code: 1008, reason: "resting" }]);
   });
 });
 

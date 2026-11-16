@@ -38,7 +38,7 @@ export async function raiseAlert(
   try {
     if (!(await spend(env.DB, unit, 1, 1, day)).ok) return "already";
   } catch (err) {
-    // A database that is down is the very outage to report: send unclaimed, at most hourly (the cron).
+    // A database that is down is the very outage to report: send unclaimed. That is at most hourly from the cron, but an alert raised from a visitor's turn can also send unclaimed when its claim fails.
     log("error", `alert ${kind} claim failed, sending anyway: ${message(err)}`);
     claimed = false;
   }

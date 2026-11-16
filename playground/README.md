@@ -40,7 +40,7 @@ What each refusal looks like:
 | --- | --- |
 | 409 `busy`, 429 `rate_limited`, 401 `auth`, 400, network error | The question never entered the conversation: it leaves the list, goes back in the box, and a line above the box says why. After `auth` the next send starts a new session. |
 | 429 `limit` | The box is replaced by a card: Message Yash, or start a new conversation. |
-| 503 `resting`, a session with `resting: true`, or 503 `{ error: "off" }` (`{ mode: "off" }` on the voice upgrade) | The box is replaced by the resting card: a one-line pitch, the resume and Messages. |
+| 503 `resting`, a session with a `resting` reason (`"ceiling"`, `"visitor"` or `"outage"`), or 503 `{ error: "off" }` (`{ mode: "off" }` on the voice upgrade) | The box is replaced by the resting card: a one-line pitch, the resume and Messages. |
 | An `error` event mid-answer (the model failed, after its one retry) | The answer keeps what was shown, and a card says it couldn't finish, with Message Yash. |
 | The stream ending early | The answer keeps what was shown, with a note to ask again. |
 

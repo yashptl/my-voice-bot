@@ -107,6 +107,25 @@ describe("watch", () => {
     expect(h.sent[0]?.text).toContain("no meta");
   });
 
+  it("a first failure followed by a run skipped as resting still raises answer_failed, besides resting", async () => {
+    spies();
+    script({ ok: false, ms: 300, reason: "no meta" }, { ok: true, ms: 0, reason: null, skipped: "resting" });
+    const h = setup();
+    await watch(h.env);
+    expect(h.sent.map((m) => m.subject).sort()).toEqual(["Assistant alert: answer_failed", "Assistant alert: resting"]);
+    expect(h.sent.find((m) => m.subject.endsWith("answer_failed"))?.text).toContain("no meta");
+    expect(await readOutage(h.env.DB)).toBeNull();
+  });
+
+  it("a first failure followed by a run that finds the assistant off still raises answer_failed", async () => {
+    spies();
+    script({ ok: false, ms: 300, reason: "no meta" }, { ok: false, ms: 0, reason: "assistant is off" });
+    const h = setup();
+    await watch(h.env);
+    expect(h.sent.map((m) => m.subject)).toEqual(["Assistant alert: answer_failed"]);
+    expect(await readOutage(h.env.DB)).toBeNull();
+  });
+
   it("failing twice with the flag set and alerted sends nothing more", async () => {
     spies();
     script({ ok: false, ms: 300, reason: "no meta" });

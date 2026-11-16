@@ -25,12 +25,26 @@ vi.mock("cloudflare:workers", () => ({
 
 /** When set, the model fails with this error kind instead of answering: how a test makes a provider outage. */
 const failingModel: { kind: LlmErrorKind | null; deadline?: "total" } = { kind: null };
+/** When true, the model says one sentence and then waits until its request is aborted: a turn a test can stop at a known point. */
+const pausingModel = { on: false };
 vi.mock("./providers", async (importOriginal) => {
   const real = await importOriginal<typeof import("./providers")>();
   return {
     ...real,
     buildProviders(env: Env) {
       const providers = real.buildProviders(env);
+      if (pausingModel.on) {
+        return {
+          ...providers,
+          llm: {
+            ...providers.llm,
+            async *stream(_req: unknown, signal?: AbortSignal) {
+              yield { t: "text" as const, text: "Yash works at Magenta Connect. Joined in" };
+              await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve()));
+            },
+          },
+        };
+      }
       if (!failingModel.kind) return providers;
       const { kind, deadline } = failingModel;
       return {
@@ -259,6 +273,7 @@ async function readEvents(res: Response, stopAfter?: (e: ServerEvent) => boolean
 }
 
 afterEach(() => {
+  pausingModel.on = false;
   failingModel.kind = null;
   failingModel.deadline = undefined;
 });
@@ -503,6 +518,7 @@ describe("Conversation POST /assistant/chat", () => {
   });
 
   it("aborting the request (the visitor went away) stops the turn the same way", async () => {
+    pausingModel.on = true; // one sentence, then silence: nothing can be queued before the abort
     const h = await chatSetup();
     const visitor = new AbortController();
     const res = await h.conversation.fetch(chat(h.token, undefined, { signal: visitor.signal }));
@@ -607,7 +623,7 @@ describe("Conversation POST /assistant/chat", () => {
       expect(await readOutage(h.db)).toBeNull();
     });
 
-    it("is not lost when setting it fails: the failure is logged, the answer still ends", async () => {
+    it("a failed write of the flag is logged and does not break the turn: the answer still ends", async () => {
       failingModel.kind = "auth";
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
       const h = await chatSetup({ db: "no-flags" });
@@ -956,6 +972,24 @@ describe("Conversation voice socket", () => {
     expect(socket.events().find((e) => e.type === "error" && e.code === "resting")).toMatchObject({ reason: "outage" });
     expect(await h.spentToday()).toBe(0);
     expect(h.data.get("turnsStarted") ?? 0).toBe(0);
+  });
+
+  it("a speech recognition failure raises voice_failed with the reason code, and nothing the visitor said", async () => {
+    const sent: { subject: string; text: string }[] = [];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = {
+      async run() {
+        throw new Error("Flux WebSocket upgrade failed: HTTP 429");
+      },
+    };
+    const vars = {
+      ALERT_TO: "owner@example.test",
+      ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+    } as unknown as Partial<Env>;
+    const h = await chatSetup({ ai: failing, vars });
+    await h.conversation.fetch(upgrade(h.token));
+    await vi.waitFor(() => expect(sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_failed"]));
+    expect(sent[0]?.text).toContain("stt_failed");
   });
 
   it("spends voice turns against the IP it upgraded from, together with that IP's text", async () => {

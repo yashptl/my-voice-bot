@@ -387,6 +387,27 @@ describe("createAnthropicCompatibleLlm: errors", () => {
       expect(await failWith({ error: { type: "api_error", message: "order 120567 failed" } }, 500)).toMatchObject({ kind: "unknown" });
     });
 
+    it("prefers a listed code in a later place over a zero or unlisted one in an earlier place", async () => {
+      expect(await failWith({ base_resp: { status_code: 0 }, error: { code: 2056, message: "x" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+      expect(await failWith({ error: { type: "api_error", code: 429, message: "Please retry your request. (2056)" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+    });
+
+    it("reads the code a real MiniMax failure put in parentheses at the end of its message", async () => {
+      expect(await failWith({ error: { type: "api_error", message: "Internal server error. Please retry your request. (2056)" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+      expect(await failWith({ error: { type: "api_error", message: "Internal server error. Please retry your request. (500)" } }, 500)).toMatchObject({
+        kind: "unknown",
+      });
+    });
+
     it("a body with no recognised code keeps the status-based kind", async () => {
       expect(await failWith({ base_resp: { status_code: 9999 } }, 429)).toMatchObject({ kind: "rate_limit", code: 9999 });
       expect(await failWith({ error: { type: "api_error", message: "x" } }, 500)).toMatchObject({ kind: "unknown" });

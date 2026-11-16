@@ -3,7 +3,7 @@ import type { AssistantMode, ErrorCode, RestingReason, ServerEvent, Source } fro
 import type { DataLine } from "../protocol/data-line";
 import type { TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
-import { AssistantHttpError, ask as chatAsk, OutdatedError, startSession, type HttpErrorCode } from "./text-chat";
+import { AssistantHttpError, ask as chatAsk, OutdatedError, restingReason, startSession, type HttpErrorCode } from "./text-chat";
 import { DEFAULT_BASE_URL } from "./urls";
 import { VoiceSession, type VoiceSessionEventOf } from "./voice-session";
 
@@ -97,6 +97,12 @@ const INITIAL: AssistantSnapshot = {
   voice: { state: "off", transcript: "" },
   messages: [],
 };
+
+/** What a turn record's error says about the model: its timeout, any other model failure, or nothing. */
+function modelFailure(recordError: string | null): MessageError | null {
+  if (recordError === null || !recordError.startsWith("llm_")) return null;
+  return recordError.startsWith("llm_timeout_") ? "timeout" : "provider";
+}
 
 /**
  * The one client object a page binds to: it owns the session, the conversation and, in voice, the
@@ -384,7 +390,14 @@ export class AssistantSession {
         this.patch(id, (m) => ({ ...m, sources: e.sources }));
         break;
       case "turn.end":
-        this.patch(id, (m) => ({ ...m, record: e.record, pending: false, stopped: m.stopped || e.record.interrupted }));
+        // A voice model failure arrives as an error event without a turnId, so the record is what says it.
+        this.patch(id, (m) => ({
+          ...m,
+          record: e.record,
+          pending: false,
+          stopped: m.stopped || e.record.interrupted,
+          error: m.error ?? modelFailure(e.record.error),
+        }));
         if (this.voiceCurrent === id) this.finishVoiceTurn();
         break;
       case "turn.interrupted":
@@ -405,12 +418,14 @@ export class AssistantSession {
       this.set({ mode: "text" });
       return this.endVoice(VOICE_RESTING);
     }
-    const ends = e.code === "limit" || e.code === "resting" || e.code === "auth" || e.code === "internal";
+    // "provider" does not end the answer here: a failed speech stream uses it too, and the answer continues as text.
+    // A model failure is read from the turn's record at turn.end instead.
+    const ends = e.code === "limit" || e.code === "timeout" || e.code === "resting" || e.code === "auth" || e.code === "internal";
     if (!ends) return this.set({ notice: e.message });
     if (this.voiceCurrent !== null) return this.fail(this.voiceCurrent, e.code, e.reason);
     // Outside a turn: the session state still changes.
     if (e.code === "limit") this.set({ limitReached: true, notice: LIMIT_REACHED });
-    else if (e.code === "resting") this.set({ status: "resting", resting: e.reason ?? "outage" });
+    else if (e.code === "resting") this.set({ status: "resting", resting: restingReason(e.reason) });
     else this.set({ notice: e.message });
   }
 
@@ -433,7 +448,7 @@ export class AssistantSession {
   /** A text or voice error: on the message, plus what it means for the whole conversation. */
   private fail(id: string, code: MessageError, reason?: RestingReason | null): void {
     if (code === "limit") this.set({ limitReached: true });
-    if (code === "resting") this.set({ status: "resting", resting: reason ?? "outage" });
+    if (code === "resting") this.set({ status: "resting", resting: restingReason(reason) });
     if (code === "off") this.set({ status: "off", resting: null, mode: "off" });
     this.patch(id, (m) => (m.error ? m : { ...m, error: code, pending: false }));
   }

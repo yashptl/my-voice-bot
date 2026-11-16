@@ -357,6 +357,20 @@ describe("ask", () => {
     expect(b.snapshot.messages[1]?.error).toBe("resting");
   });
 
+  it("reads a resting reason this client does not know as an outage", async () => {
+    chats.push(stream([{ type: "error", code: "resting", message: "", reason: "maintenance" as "outage" }]).response);
+    const s = make();
+    await s.ask("hi");
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "outage" });
+  });
+
+  it("marks a text answer whose record says the model failed, when no error event came", async () => {
+    chats.push(stream([{ type: "turn.end", turnId: "t1", record: { ...RECORD, error: "llm_overloaded" } }]).response);
+    const s = make();
+    await s.ask("hi");
+    expect(s.snapshot.messages[1]).toMatchObject({ error: "provider", pending: false });
+  });
+
   it("marks a stream that ends early as a dropped connection", async () => {
     chats.push(stream([{ type: "sentence", turnId: "t1", id: 0, text: "Half an" }]).response);
     const s = make();
@@ -790,6 +804,42 @@ describe("voice", () => {
     ws.receive({ type: "error", code: "resting", message: "", reason: "visitor" });
     expect(s.snapshot).toMatchObject({ status: "resting", resting: "visitor" });
     expect(s.snapshot.messages[1]).toMatchObject({ error: "resting", pending: false });
+  });
+
+  it("reads a voice resting reason this client does not know as an outage", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "error", code: "resting", message: "", reason: "maintenance" });
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "outage" });
+    expect(s.snapshot.messages[1]).toMatchObject({ error: "resting", pending: false });
+  });
+
+  it("a voice answer whose model times out ends with error timeout", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+    ws.receive({ type: "error", code: "timeout", message: "" });
+    ws.receive({ type: "turn.end", turnId: "t1", record: { ...RECORD, error: "llm_timeout_first_token" } });
+    expect(s.snapshot.messages[1]).toMatchObject({ text: "One.", error: "timeout", pending: false });
+    expect(s.snapshot.busy).toBe(false);
+  });
+
+  it("a voice answer whose record says the model failed ends with error provider", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "error", code: "provider", message: "The model failed." });
+    ws.receive({ type: "turn.end", turnId: "t1", record: { ...RECORD, error: "llm_overloaded" } });
+    expect(s.snapshot.messages[1]).toMatchObject({ error: "provider", pending: false });
+  });
+
+  it("a voice answer whose only error is a speech failure keeps its sentences and has no error", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+    ws.receive({ type: "error", code: "provider", message: "Speech failed; the answer continues as text." });
+    ws.receive({ type: "sentence", turnId: "t1", id: 1, text: "Two." });
+    ws.receive({ type: "turn.end", turnId: "t1", record: { ...RECORD, error: "tts_failed" } });
+    expect(s.snapshot.messages[1]).toMatchObject({ text: "One. Two.", error: null, pending: false });
   });
 
   it("a ready event with another protocol shuts voice down and the session is outdated", async () => {

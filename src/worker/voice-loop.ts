@@ -616,6 +616,7 @@ export class VoiceLoop {
     if (!(await this.spend(t))) return;
     t.spent = true;
     let prose: string | null = null;
+    let outage = false;
     try {
       const events = respond({
         llm: this.guarded(t),
@@ -676,6 +677,7 @@ export class VoiceLoop {
       t.error = failure.record;
       this.o.log?.("error", failure.logLine);
       this.sendError(failure.code, failure.message, failure.reason);
+      outage = failure.code === "resting";
     }
     const tts = await t.tts;
     if (tts && !t.stopped) {
@@ -687,6 +689,8 @@ export class VoiceLoop {
     }
     if (t.stopped) return;
     this.endTurn(t, prose ?? t.sentences.map((s) => s.text).join(" "));
+    // The assistant is resting for an outage: like a refused turn, end the conversation, after the record is written.
+    if (outage) this.end(CLOSE_POLICY, "resting");
   }
 
   /**

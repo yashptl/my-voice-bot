@@ -210,17 +210,25 @@ const MINIMAX_AUTH_CODES: ReadonlySet<number> = new Set([1004, 2049]);
 const MINIMAX_RATE_LIMIT_CODES: ReadonlySet<number> = new Set([1002, 2062]);
 const LISTED_CODE_IN_MESSAGE = /\b(1004|1008|2049|2053|2056|2067)\b/;
 
+const ALL_LISTED_CODES: ReadonlySet<number> = new Set([...MINIMAX_QUOTA_CODES, ...MINIMAX_AUTH_CODES, ...MINIMAX_RATE_LIMIT_CODES]);
+
 /**
- * The provider's numeric code. No error body was ever recorded, so look in the three places a
- * MiniMax or Anthropic-style body might hold it, then, last, for a listed code standing alone in the message.
+ * The provider's numeric code: the first listed one (see the sets above) in base_resp.status_code,
+ * error.code, a top-level code, then the message, so a 0 or an HTTP-style 429 in an earlier place
+ * does not hide a listed code in a later one. A listed code in the message must stand alone, and it
+ * can sit in parentheses at the end (a real MiniMax failure was HTTP 500 with "Internal server
+ * error. Please retry your request. (500)"). When none is listed, the first number found, which
+ * is only logged.
  */
 function providerCode(body: ErrorBody, message: string | undefined): number | undefined {
+  const numbers: number[] = [];
   for (const v of [body.base_resp?.status_code, body.error?.code, body.code]) {
     const n = typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : v;
-    if (typeof n === "number" && Number.isInteger(n)) return n;
+    if (typeof n === "number" && Number.isInteger(n)) numbers.push(n);
   }
   const listed = message ? LISTED_CODE_IN_MESSAGE.exec(message) : null;
-  return listed ? Number(listed[1]) : undefined;
+  if (listed) numbers.push(Number(listed[1]));
+  return numbers.find((n) => ALL_LISTED_CODES.has(n)) ?? numbers[0];
 }
 
 function errorKind(status: number | undefined, type: string | undefined, code?: number): LlmErrorKind {

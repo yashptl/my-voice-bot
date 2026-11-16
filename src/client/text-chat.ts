@@ -122,7 +122,7 @@ async function httpError(res: Response): Promise<AssistantHttpError> {
 }
 
 /** A missing or unrecognised reason reads as an outage, the one that does not promise tomorrow. */
-function restingReason(x: unknown): RestingReason {
+export function restingReason(x: unknown): RestingReason {
   return x === "ceiling" || x === "visitor" ? x : "outage";
 }
 
