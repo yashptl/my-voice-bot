@@ -24,7 +24,13 @@ function micConstraints(): MediaTrackConstraints {
   // Only Chromium exposes userAgentData. Chrome/Edge 141+ take "all" (cancel all system audio, not
   // just this page's); older Chromium reads the string as true.
   const chromium = "userAgentData" in navigator;
-  return { echoCancellation: chromium ? "all" : true, noiseSuppression: true };
+  // Typed here, not by lib.dom: TypeScript before 6 does not know "all", and hosts that copy this
+  // file may compile it with an older lib.dom.
+  const constraints: Omit<MediaTrackConstraints, "echoCancellation"> & { echoCancellation?: boolean | "all" } = {
+    echoCancellation: chromium ? "all" : true,
+    noiseSuppression: true,
+  };
+  return constraints as MediaTrackConstraints;
 }
 
 /**
