@@ -204,7 +204,7 @@ body {
 }
 
 .note.code {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--mono);
   font-size: 0.75rem;
 }
 
