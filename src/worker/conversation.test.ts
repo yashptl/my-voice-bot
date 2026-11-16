@@ -7,6 +7,8 @@ import { SseParser } from "../protocol/sse";
 import { mintToken, parseToken } from "./auth";
 import type { Env } from "./env";
 import { used, utcDay, type LedgerUnit } from "./ledger";
+import { readOutage, setOutage } from "./outage-flag";
+import { LlmError, type LlmErrorKind } from "../ports/llm";
 
 // The Durable Object base class only exists inside workerd; the shell needs nothing from it here.
 vi.mock("cloudflare:workers", () => ({
@@ -19,6 +21,30 @@ vi.mock("cloudflare:workers", () => ({
     }
   },
 }));
+
+/** When set, the model fails with this error kind instead of answering: how a test makes a provider outage. */
+const failingModel: { kind: LlmErrorKind | null; deadline?: "total" } = { kind: null };
+vi.mock("./providers", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./providers")>();
+  return {
+    ...real,
+    buildProviders(env: Env) {
+      const providers = real.buildProviders(env);
+      if (!failingModel.kind) return providers;
+      const { kind, deadline } = failingModel;
+      return {
+        ...providers,
+        llm: {
+          ...providers.llm,
+          // eslint-disable-next-line require-yield
+          async *stream() {
+            throw new LlmError(kind, "scripted failure", { deadline });
+          },
+        },
+      };
+    },
+  };
+});
 
 const { Conversation, RETENTION_MS, readJson } = await import("./conversation");
 
@@ -44,7 +70,8 @@ function fakeState() {
       data.clear();
     },
   };
-  return { ctx: { storage } as unknown as DurableObjectState, data, alarm: () => alarm };
+  const waitUntil = (p: Promise<unknown>) => void p; // the promise runs on its own in tests
+  return { ctx: { storage, waitUntil } as unknown as DurableObjectState, data, alarm: () => alarm };
 }
 
 describe("Conversation", () => {
@@ -128,7 +155,7 @@ const QUESTION = "Where does Yash work?";
  */
 async function chatSetup(
   o: {
-    db?: "ok" | "refuse" | "throw" | "no-log" | "no-gaps";
+    db?: "ok" | "refuse" | "throw" | "no-log" | "no-gaps" | "no-flags";
     sqlite?: ReturnType<typeof sqliteD1>;
     vars?: Partial<Env>;
     ai?: unknown;
@@ -141,7 +168,8 @@ async function chatSetup(
   if (o.turnsStarted !== undefined) s.data.set("turnsStarted", o.turnsStarted);
   const db = o.sqlite ?? sqliteD1();
   const failing = (sql: string) =>
-    o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns")) || (o.db === "no-gaps" && sql.includes("INTO gaps"));
+    o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns")) || (o.db === "no-gaps" && sql.includes("INTO gaps")) ||
+    (o.db === "no-flags" && sql.includes("INTO flags"));
   const env = {
     AI: o.ai ?? {},
     ASSISTANT_MODE: "voice",
@@ -203,6 +231,11 @@ async function readEvents(res: Response, stopAfter?: (e: ServerEvent) => boolean
     }
   }
 }
+
+afterEach(() => {
+  failingModel.kind = null;
+  failingModel.deadline = undefined;
+});
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const json = async (res: Response) => ({ status: res.status, body: await res.json() });
@@ -439,6 +472,67 @@ describe("Conversation POST /assistant/chat", () => {
     await readEvents(await h.conversation.fetch(chat(h.token)));
     await sleep(0);
     expect(h.turnRows()).toEqual([expect.objectContaining({ mode: "text", source: "canary" })]);
+  });
+
+  describe("with the outage flag", () => {
+    it("is set: answers 503 resting, reason outage, spends nothing and undoes the conversation's turn", async () => {
+      const h = await chatSetup();
+      await setOutage(h.db, "llm_quota", 1000);
+      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "outage" },
+      });
+      expect(h.data.get("turnsStarted")).toBe(0);
+      expect(await h.spentToday()).toBe(0);
+      expect(h.visitorCounts()).toEqual([0]);
+    });
+
+    it("is set: still answers the canary's conversation", async () => {
+      const h = await chatSetup({ source: "canary" });
+      await setOutage(h.db, "llm_quota", 1000);
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      expect(events.at(-1)).toMatchObject({ type: "turn.end", record: { error: null } });
+      expect(await h.spentToday()).toBe(1);
+    });
+
+    for (const [kind, error] of [
+      ["auth", "llm_auth"],
+      ["quota", "llm_quota"],
+    ] as const) {
+      it(`is set by a visitor's turn that ends ${error}, with that error as the reason`, async () => {
+        failingModel.kind = kind;
+        const h = await chatSetup();
+        await readEvents(await h.conversation.fetch(chat(h.token)));
+        await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: error, alerted: false }));
+      });
+    }
+
+    it("is set by the canary's turn too: whatever the conversation's source", async () => {
+      failingModel.kind = "auth";
+      const h = await chatSetup({ source: "canary" });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: "llm_auth" }));
+    });
+
+    it("is not set by a turn that ends in a timeout", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const h = await chatSetup();
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(h.turnRows()).toEqual([expect.objectContaining({ error: "llm_timeout_total" })]));
+      await sleep(0);
+      expect(events.at(-1)).toMatchObject({ type: "turn.end", record: { error: "llm_timeout_total" } });
+      expect(await readOutage(h.db)).toBeNull();
+    });
+
+    it("is not lost when setting it fails: the failure is logged, the answer still ends", async () => {
+      failingModel.kind = "auth";
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const h = await chatSetup({ db: "no-flags" });
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      expect(events.at(-1)).toMatchObject({ type: "turn.end" });
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(expect.stringMatching(/outage flag failed: D1 unavailable/)));
+    });
   });
 
   it("logs a stopped answer as interrupted", async () => {
@@ -690,6 +784,17 @@ describe("Conversation voice socket", () => {
     expect(types(socket).at(-1)).toBe("error:limit");
     expect(socket.closed).toEqual({ code: 1008, reason: "turn limit" });
     expect(h.data.get("turnsStarted")).toBe(30);
+  });
+
+  it("with the outage flag set: says resting, reason outage, and spends nothing", async () => {
+    const h = await chatSetup({ ai });
+    await setOutage(h.db, "llm_auth", 1000);
+    const { socket, flux } = await open(h);
+    ask(flux, QUESTION);
+    await vi.waitFor(() => expect(types(socket)).toContain("error:resting"));
+    expect(socket.events().find((e) => e.type === "error" && e.code === "resting")).toMatchObject({ reason: "outage" });
+    expect(await h.spentToday()).toBe(0);
+    expect(h.data.get("turnsStarted") ?? 0).toBe(0);
   });
 
   it("spends voice turns against the IP it upgraded from, together with that IP's text", async () => {

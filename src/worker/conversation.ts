@@ -12,10 +12,12 @@ import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
 import { recordGap, type Gap } from "./gap-log";
-import { AUDIO_BLOCK_SECONDS, release, releaseAudio, reserve, reserveAudio, spendTurn, voiceUnitResting, type TurnSpend } from "./ledger";
+import { admitTurn, AUDIO_BLOCK_SECONDS, release, releaseAudio, reserve, reserveAudio, voiceUnitResting, type TurnSpend } from "./ledger";
+import { setOutage } from "./outage-flag";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
+import { OUTAGE_ERRORS } from "./turn-failure";
 import { clientIp } from "./visitor";
 import { VOICE_IDLE_CLOSE_MS, VOICE_RESTING_MESSAGE, VoiceLoop } from "./voice-loop";
 
@@ -150,7 +152,7 @@ export class Conversation extends DurableObject<Env> {
       now: () => Date.now(),
       state,
       ledger: {
-        spendTurn: () => spendTurn(this.env, ip, log),
+        spendTurn: async () => admitTurn(this.env, ip, log, { skipOutage: await this.isCanary() }),
         // Mic seconds are charged to the visitor as well as to everyone (ledger.ts reserveAudio).
         reserve: (unit, n) => (unit === "voice_seconds" ? reserveAudio(this.env, ip, n, log) : reserve(this.env, unit, n, log)),
         release: (unit, n, day) =>
@@ -239,7 +241,7 @@ export class Conversation extends DurableObject<Env> {
       const state = await this.loadState(log);
       if (!state.startTurn()) return json({ error: "limit" }, 429);
       // Whatever makes the spend throw, the turn is undone and the visitor hears an outage, not a 500.
-      const spent = await spendTurn(this.env, clientIp(request), log).catch((err: unknown): TurnSpend => {
+      const spent = await admitTurn(this.env, clientIp(request), log, { skipOutage: await this.isCanary() }).catch((err: unknown): TurnSpend => {
         log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
         return "outage";
       });
@@ -309,11 +311,26 @@ export class Conversation extends DurableObject<Env> {
   private logTurn(record: TurnRecord, log: Log): void {
     const at = Date.now();
     void (async () => {
-      const source: TurnSource = (await this.ctx.storage.get("source")) === "canary" ? "canary" : "visitor";
+      const source: TurnSource = (await this.isCanary()) ? "canary" : "visitor";
       await recordTurn(this.env.DB, record, at, source);
     })().catch((err: unknown) => {
       log("error", `turn log failed: ${err instanceof Error ? err.message : String(err)}`);
     });
+    // A failure that will not mend itself rests the assistant for everyone, whoever's turn met it.
+    if (record.error !== null && OUTAGE_ERRORS.has(record.error)) {
+      const reason = record.error;
+      this.ctx.waitUntil(
+        setOutage(this.env.DB, reason, at).then(
+          () => undefined,
+          (err: unknown) => log("error", `outage flag failed: ${err instanceof Error ? err.message : String(err)}`),
+        ),
+      );
+    }
+  }
+
+  /** Whether this is the canary's conversation: it is admitted through an outage, to learn when the provider is back. */
+  private async isCanary(): Promise<boolean> {
+    return (await this.ctx.storage.get("source")) === "canary";
   }
 
   /**
@@ -324,7 +341,7 @@ export class Conversation extends DurableObject<Env> {
   private logGap(gap: Gap, conversationId: string, log: Log): void {
     const at = Date.now();
     void (async () => {
-      if ((await this.ctx.storage.get("source")) === "canary") return;
+      if (await this.isCanary()) return;
       await recordGap(this.env.DB, { ...gap, conversationId }, at);
     })().catch((err: unknown) => {
       log("error", `gap log failed: ${err instanceof Error ? err.message : String(err)}`);

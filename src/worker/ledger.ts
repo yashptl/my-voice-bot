@@ -1,6 +1,7 @@
 import type { RestingReason } from "../protocol/events";
 import type { Log } from "./conversation-state";
 import type { Env } from "./env";
+import { readOutage } from "./outage-flag";
 import { visitorKey } from "./visitor";
 
 /** What the day's shared ceilings count: model turns, mic seconds sent to Flux, characters sent to MiniMax speech. */
@@ -149,7 +150,11 @@ export type TurnSpend = "ok" | RestingReason;
  * turn could pass a ceiling, so it fails closed.
  */
 export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpend> {
-  const day = utcDay(Date.now());
+  return spendTurnOn(env, ip, utcDay(Date.now()), log);
+}
+
+/** spendTurn for a given `day`, so a caller that may give the spend back refunds the day it spent from. */
+async function spendTurnOn(env: Env, ip: string, day: string, log: Log): Promise<TurnSpend> {
   const key = keyFor(env, day, ip);
   const [visitor, everyone] = await Promise.all([
     outcome(
@@ -165,6 +170,27 @@ export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpe
   ]);
   if (everyone === "refused") return "ceiling";
   return visitor === "refused" ? "visitor" : "outage";
+}
+
+/**
+ * The gate every turn passes: spendTurn and the outage flag, read concurrently so the flag adds no
+ * round trip. A turn refused for a ceiling or a visitor cap says so, flag or not. Otherwise a set
+ * flag, or a flag read that fails, is "outage", and the spend just made is given back, so a refused
+ * turn costs nothing. `skipOutage` ignores the flag: the canary's conversation is how the owner
+ * learns the provider is back.
+ */
+export async function admitTurn(env: Env, ip: string, log: Log, o: { skipOutage?: boolean } = {}): Promise<TurnSpend> {
+  const day = utcDay(Date.now());
+  const [spent, outage] = await Promise.all([
+    spendTurnOn(env, ip, day, log),
+    o.skipOutage ? false : attempt(async () => (await readOutage(env.DB)) !== null, log),
+  ]);
+  if (spent !== "ok" || outage === false) return spent;
+  await Promise.all([
+    quietly(keyFor(env, day, ip).then((k) => refundVisitor(env.DB, k, day)), log),
+    quietly(refund(env.DB, "turns", 1, day), log),
+  ]);
+  return "outage";
 }
 
 async function keyFor(env: Env, day: string, ip: string, unit?: string): Promise<string> {
@@ -220,18 +246,20 @@ export function release(env: Env, unit: VoiceUnit, n: number, day: string, log: 
 
 /**
  * Why the assistant rests for this visitor right now (UTC day), or null when they can ask. Reads
- * everyone's turns and the visitor's own concurrently. "ceiling" wins over "visitor", and both over
- * "outage" (a read that failed, or IP_HASH_KEY missing), so a read that fails closed still says what it knows.
+ * everyone's turns, the visitor's own and the outage flag concurrently. "ceiling" wins over
+ * "visitor", and both over "outage" (the flag is set, a read failed, or IP_HASH_KEY is missing), so a
+ * read that fails closed still says what it knows.
  */
 export async function restingReason(env: Env, ip: string, log: Log): Promise<RestingReason | null> {
   const day = utcDay(Date.now());
-  const [everyone, visitor] = await Promise.all([
+  const [everyone, visitor, outage] = await Promise.all([
     attempt(async () => (await used(env.DB, "turns", day)) >= ceiling(env, "turns", log), log),
     attempt(async () => (await usedVisitor(env.DB, await keyFor(env, day, ip), day)) >= turnsPerIp(env, log), log),
+    attempt(async () => (await readOutage(env.DB)) !== null, log),
   ]);
   if (everyone === true) return "ceiling";
   if (visitor === true) return "visitor";
-  return everyone === "failed" || visitor === "failed" ? "outage" : null;
+  return everyone === "failed" || visitor === "failed" || outage !== false ? "outage" : null;
 }
 
 /** The read's answer, or "failed" (logged) when it throws. */

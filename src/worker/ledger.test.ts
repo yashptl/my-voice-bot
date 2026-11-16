@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { Env } from "./env";
+import { setOutage } from "./outage-flag";
 import {
+  admitTurn,
   ceiling,
   pruneDays,
   pruneVisitors,
@@ -214,6 +216,74 @@ describe("ceiling and turnsPerIp", () => {
   });
 });
 
+describe("admitTurn", () => {
+  const counts = (db: ReturnType<typeof sqliteD1>) => ({ everyone: rows(db), visitor: visitorRows(db).map((r) => r.used) });
+
+  it("with the flag unset, spends as spendTurn does", async () => {
+    const db = sqliteD1();
+    expect(await admitTurn(envOf(db), IP, vi.fn())).toBe("ok");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(1);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([1]);
+  });
+
+  it("with the flag set, says outage and gives the spend back, leaving both counts as they were", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    expect(await admitTurn(envOf(db), IP, vi.fn())).toBe("outage");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(0);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([0]);
+  });
+
+  it("with the flag set and the shared ceiling reached, says ceiling: a refused spend outranks the flag", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    expect(await admitTurn(envOf(db, { DAILY_TURNS: "0" }), IP, vi.fn())).toBe("ceiling");
+  });
+
+  it("with the flag set and the visitor's own turns used, says visitor", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    expect(await admitTurn(envOf(db, { DAILY_TURNS_PER_IP: "0" }), IP, vi.fn())).toBe("visitor");
+  });
+
+  it("with skipOutage, ignores the flag and spends the turn", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    expect(await admitTurn(envOf(db), IP, vi.fn(), { skipOutage: true })).toBe("ok");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(1);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([1]);
+  });
+
+  it("says outage, with the counts unchanged, when the flag read throws, and logs why", async () => {
+    const db = sqliteD1();
+    const log = vi.fn();
+    const flagFails = {
+      prepare(sql: string) {
+        if (sql.includes("FROM flags")) throw new Error("flags unavailable");
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+    expect(await admitTurn(envOf(flagFails), IP, log)).toBe("outage");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(0);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([0]);
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: flags unavailable");
+  });
+
+  it("reads the flag while the spend runs, not after it", async () => {
+    const db = sqliteD1();
+    const order: string[] = [];
+    const watched = {
+      prepare(sql: string) {
+        order.push(sql.includes("FROM flags") ? "flag" : "spend");
+        return db.prepare(sql);
+      },
+    } as unknown as D1Database;
+    await admitTurn(envOf(watched), IP, vi.fn());
+    expect(order.slice(0, 3).sort()).toEqual(["flag", "spend", "spend"]);
+    expect(counts(db).everyone).toEqual([{ day: utcDay(Date.now()), unit: "turns", used: 1 }]);
+  });
+});
+
 describe("spendTurn", () => {
   it("spends one of the visitor's turns and one of everyone's, keyed by a hash, never the IP", async () => {
     const db = sqliteD1();
@@ -404,6 +474,14 @@ describe("restingReason", () => {
 
   it("is outage without IP_HASH_KEY", async () => {
     expect(await restingReason(envOf(sqliteD1(), { IP_HASH_KEY: " " }), IP, vi.fn())).toBe("outage");
+  });
+
+  it("is outage when the flag is set and no cap is reached, and ceiling and visitor still come first", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_auth", 1000);
+    expect(await restingReason(envOf(db), IP, vi.fn())).toBe("outage");
+    expect(await restingReason(envOf(db, { DAILY_TURNS_PER_IP: "0" }), IP, vi.fn())).toBe("visitor");
+    expect(await restingReason(envOf(db, { DAILY_TURNS: "0" }), IP, vi.fn())).toBe("ceiling");
   });
 });
 

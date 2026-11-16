@@ -8,6 +8,7 @@ import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
 import { reserveAudio, spend, spendTurn, spendVisitor, utcDay } from "./ledger";
 import { recordGap } from "./gap-log";
+import { setOutage } from "./outage-flag";
 import { recordTurn } from "./turn-log";
 
 // The Durable Object class needs workerd; the routes only talk to it through its namespace stub.
@@ -267,6 +268,14 @@ describe("POST /assistant/session", () => {
     expect(await spendTurn(h.env, "203.0.113.7", vi.fn())).toBe("ok");
     fakeSiteverify({ success: true });
     expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("visitor");
+  });
+
+  it("says resting outage while the outage flag is set, with the day's turns and this visitor's to spare", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    const h = setup({ db });
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("outage");
   });
 
   it("says resting outage, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
