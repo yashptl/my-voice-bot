@@ -6,6 +6,8 @@ import { useAssistant } from "../src/client/react";
 import { getTurnstileToken, TEST_SITE_KEY } from "../src/client/turnstile";
 import { DEFAULT_BASE_URL } from "../src/client/urls";
 import { MAX_MESSAGE_CHARS } from "../src/protocol/chat";
+// no-inline: a small file would otherwise become a data: URL; the worklet must load same-origin.
+import workletUrl from "../src/client/capture-worklet.js?url&no-inline";
 import { Inspector } from "./Inspector";
 
 const STARTERS = [
@@ -40,6 +42,7 @@ const FAILED = "The assistant couldn't finish this answer. You can ask again, or
 function newSession() {
   return new AssistantSession({
     baseUrl: DEFAULT_BASE_URL,
+    workletUrl,
     turnstileToken: () => getTurnstileToken(TEST_SITE_KEY),
   });
 }

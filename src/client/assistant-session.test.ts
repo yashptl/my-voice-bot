@@ -91,6 +91,7 @@ const fakeFetch = vi.fn<typeof fetch>(async (input, init) => {
 function make() {
   return new AssistantSession({
     baseUrl: BASE,
+    workletUrl: "/assets/capture-worklet.js",
     turnstileToken: async () => "XXXX.DUMMY.TOKEN.XXXX",
     fetch: fakeFetch,
     now: () => t,
@@ -729,6 +730,30 @@ describe("voice", () => {
     const { s } = await voiceReady();
     await until(() => s.snapshot.voice.state === "off");
     expect(s.snapshot.notice).toMatch(/microphone/i);
+  });
+
+  it("treats a missing worklet URL like a blocked microphone, and leaves text alone", async () => {
+    vi.mocked(startMic).mockClear();
+    sessionTemplate = { mode: "voice" };
+    const s = new AssistantSession({
+      baseUrl: BASE,
+      turnstileToken: async () => "XXXX.DUMMY.TOKEN.XXXX",
+      fetch: fakeFetch,
+      now: () => t,
+      createWebSocket: (url, protocols) => {
+        const ws = new FakeWebSocket(url, protocols);
+        sockets.push(ws);
+        return ws as unknown as WebSocket;
+      },
+    });
+    await s.start();
+    const starting = s.startVoice();
+    await until(() => sockets.length === 1);
+    sockets[0]!.open();
+    await starting;
+    await until(() => s.snapshot.voice.state === "off");
+    expect(s.snapshot.notice).toMatch(/microphone/i);
+    expect(startMic).not.toHaveBeenCalled();
   });
 
   it("does not start voice in text mode", async () => {

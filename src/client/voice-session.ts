@@ -18,6 +18,11 @@ export type VoiceSessionEvent =
   | { type: "mark"; turnId: string; mark: ClientMark; at: number };
 
 export interface VoiceSessionOptions {
+  /**
+   * Where the host serves capture-worklet.js. Required for voice: talk() refuses without it, before
+   * the microphone is asked for. The host's bundler resolves it (Vite: `?url&no-inline`).
+   */
+  workletUrl?: string;
   /** Opens the voice socket; tests pass a fake. */
   createWebSocket?: (url: string, protocols: string[]) => WebSocket;
 }
@@ -108,6 +113,8 @@ export class VoiceSession {
   async talk(source: MicSource = "mic"): Promise<void> {
     const context = this.context;
     if (!context || this.ws?.readyState !== WebSocket.OPEN) throw new Error("not connected");
+    const workletUrl = this.options.workletUrl;
+    if (!workletUrl) throw new Error("workletUrl is required for voice");
     void context.resume();
     if (this.player?.active) this.interrupt();
     this.stopMic();
@@ -116,7 +123,7 @@ export class VoiceSession {
 
     let mic: Mic;
     try {
-      mic = await startMic({ context, source, onFrame: (frame) => this.sendFrame(frame) });
+      mic = await startMic({ context, source, workletUrl, onFrame: (frame) => this.sendFrame(frame) });
     } catch (err) {
       if (generation === this.micGeneration) this.gate.stop();
       throw err;

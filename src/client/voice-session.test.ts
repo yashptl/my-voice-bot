@@ -3,6 +3,7 @@ import { encodeAudioFrame, VOICE_FORMAT } from "../protocol/audio";
 import type { SessionResponse } from "../protocol/chat";
 import { PROTOCOL_VERSION, WS_SUBPROTOCOL } from "../protocol/version";
 import { FakeAudioContext, FakeWebSocket } from "./testing";
+import { startMic } from "./mic";
 import { VoiceSession, type VoiceSessionEvent } from "./voice-session";
 
 vi.mock("./mic", () => ({ startMic: vi.fn(async () => ({ stop: vi.fn(), setMuted: vi.fn() })) }));
@@ -11,10 +12,13 @@ const BASE = "https://yashos.dev/assistant";
 const SESSION: SessionResponse = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "voice", expiresAt: 9e12, resting: false };
 const READY = { type: "ready", protocol: PROTOCOL_VERSION, mode: "voice", audio: VOICE_FORMAT };
 
+const WORKLET_URL = "/assets/capture-worklet.js";
+
 let sockets: FakeWebSocket[];
 
 function makeSession() {
   const session = new VoiceSession({
+    workletUrl: WORKLET_URL,
     createWebSocket: (url, protocols) => {
       const ws = new FakeWebSocket(url, protocols);
       sockets.push(ws);
@@ -177,5 +181,26 @@ describe("VoiceSession.talk", () => {
     await connected(session);
     await session.talk();
     expect(events).toContainEqual({ type: "mic", state: "live" });
+  });
+
+  it("hands the worklet URL to the mic", async () => {
+    const { session } = makeSession();
+    await connected(session);
+    await session.talk();
+    expect(vi.mocked(startMic)).toHaveBeenCalledWith(expect.objectContaining({ workletUrl: WORKLET_URL }));
+  });
+
+  it("refuses without a worklet URL, before the mic is asked for", async () => {
+    vi.mocked(startMic).mockClear();
+    const session = new VoiceSession({
+      createWebSocket: (url, protocols) => {
+        const ws = new FakeWebSocket(url, protocols);
+        sockets.push(ws);
+        return ws as unknown as WebSocket;
+      },
+    });
+    await connected(session);
+    await expect(session.talk()).rejects.toThrow("workletUrl is required for voice");
+    expect(startMic).not.toHaveBeenCalled();
   });
 });

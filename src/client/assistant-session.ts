@@ -11,6 +11,11 @@ export interface AssistantSessionOptions {
   baseUrl?: string;
   /** A fresh Turnstile token for each session; the host page renders the widget. */
   turnstileToken(): Promise<string>;
+  /**
+   * Where the host serves capture-worklet.js, for voice. Without it voice fails like a blocked
+   * microphone and text is unaffected. The host's bundler resolves it (Vite: `?url&no-inline`).
+   */
+  workletUrl?: string;
   fetch?: typeof fetch;
   /** For tests. */
   createWebSocket?: (url: string, protocols: string[]) => WebSocket;
@@ -204,7 +209,7 @@ export class AssistantSession {
    */
   async startVoice(): Promise<void> {
     if (this.disposed || this.snap.mode !== "voice" || this.voice) return;
-    const voice = new VoiceSession({ createWebSocket: this.o.createWebSocket });
+    const voice = new VoiceSession({ createWebSocket: this.o.createWebSocket, workletUrl: this.o.workletUrl });
     this.voice = voice;
     this.set({ voice: { state: "connecting", transcript: "" }, notice: null });
     this.voiceOff = [

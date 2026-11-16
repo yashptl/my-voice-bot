@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+// no-inline: a small file would otherwise become a data: URL; the worklet must load same-origin.
+import workletUrl from "../src/client/capture-worklet.js?url&no-inline";
 import type { MicState } from "../src/client/half-duplex";
 import type { MicSource } from "../src/client/mic";
 import { startSession } from "../src/client/text-chat";
@@ -37,7 +39,7 @@ interface TurnView {
 type Connection = Omit<VoiceSessionEventOf<"connection">, "type">;
 
 export function VoiceSpike() {
-  const session = useMemo(() => new VoiceSession(), []);
+  const session = useMemo(() => new VoiceSession({ workletUrl }), []);
   const [connection, setConnection] = useState<Connection>({ status: "closed" });
   const [providers, setProviders] = useState<string | null>(null);
   const [serverState, setServerState] = useState<AssistantState | null>(null);
