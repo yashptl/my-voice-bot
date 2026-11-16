@@ -57,6 +57,7 @@ function setup(
   const closes: { code: number; reason: string }[] = [];
   const logged: TurnRecord[] = [];
   const gaps: Gap[] = [];
+  const voiceFailures: string[] = [];
   const stt = createFakeStt();
   const llm =
     o.llm ??
@@ -112,8 +113,9 @@ function setup(
     log: (level, line) => void logs.push(`${level}: ${line}`),
     onRecord: (r) => void logged.push(structuredClone(r)),
     onGap: (g) => void gaps.push(structuredClone(g)),
+    onVoiceFailure: (reason) => void voiceFailures.push(reason),
   });
-  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged, gaps };
+  return { out, signals, closes, stt, loop, state, ttsCalls, logs, logged, gaps, voiceFailures };
 }
 
 type H = ReturnType<typeof setup>;
@@ -1458,5 +1460,54 @@ describe("VoiceLoop onGap (the gap log)", () => {
     await ask(missing, QUESTION);
     await vi.runAllTimersAsync();
     expect(missing.gaps).toEqual([]);
+  });
+});
+
+describe("VoiceLoop onVoiceFailure (the owner's alert)", () => {
+  it("is called with stt_failed when speech recognition fails", async () => {
+    const h = setup();
+    h.stt.failOpens = new Error("Flux WebSocket upgrade failed: HTTP 429");
+    await h.loop.start();
+    expect(h.voiceFailures).toEqual(["stt_failed"]);
+  });
+
+  it("is called once with tts_failed when speech fails, however many sentences follow", async () => {
+    const brokenTts: TtsPort = {
+      id: "broken",
+      format: VOICE_FORMAT,
+      open: async () => {
+        throw new Error("speech failed");
+      },
+    };
+    const h = setup({ tts: brokenTts });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(h.voiceFailures).toEqual(["tts_failed"]);
+  });
+
+  it("is called once with tts_timeout when speech does not open in time", async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const slow: TtsPort = {
+      id: "slow",
+      format: VOICE_FORMAT,
+      open: async () => {
+        await sleep(60_000);
+        return { speak() {}, finish: async () => {}, cancel() {} };
+      },
+    };
+    const h = setup({ tts: slow });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.advanceTimersByTimeAsync(5_100);
+    expect(h.voiceFailures).toEqual(["tts_timeout"]);
+  });
+
+  it("is not called when nothing failed", async () => {
+    const h = setup();
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(h.voiceFailures).toEqual([]);
   });
 });

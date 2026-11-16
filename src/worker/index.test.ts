@@ -457,7 +457,8 @@ describe("scheduled", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const h = setup({ db: brokenDb(), answer: [] });
     await run(h.env);
-    expect(h.forwarded).toHaveLength(1);
+    // The canary ran, and a failed one runs again straight away: twice.
+    expect(h.forwarded).toHaveLength(2);
     expect(error).toHaveBeenCalledWith("retention failed: D1 unavailable");
   });
 });

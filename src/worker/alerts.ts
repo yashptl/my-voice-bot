@@ -1,9 +1,14 @@
 import type { Env } from "./env";
 import type { Log } from "./conversation-state";
 import { refund, spend, utcDay } from "./ledger";
+import { markOutageAlerted, readOutage, setOutage } from "./outage-flag";
 
-/** What an alert email is about. */
-export type AlertKind = "canary_failed" | "slow" | "resting" | "misconfigured";
+/**
+ * What an alert email is about: `outage` the provider failing for good (the assistant rests),
+ * `answer_failed` an answer a visitor or the canary saw fail, `voice_failed` speech that broke,
+ * `slow` a slow canary, `resting` the day's turns used up, `misconfigured` missing config.
+ */
+export type AlertKind = "outage" | "answer_failed" | "voice_failed" | "slow" | "resting" | "misconfigured";
 
 /**
  * Emails the owner, at most once per kind per UTC day. The day's claim is `alert:<kind>` with
@@ -49,6 +54,27 @@ export async function raiseAlert(
     log("error", `alert ${kind} not sent: ${message(err)}`);
     if (claimed) await refund(env.DB, unit, 1, day).catch(() => {});
     return "failed";
+  }
+}
+
+/**
+ * Sets the outage flag (keeping an earlier reason) and, unless this outage's email already went
+ * out, raises the "outage" alert; "sent" or "already" marks the flag alerted, "failed" or "unsent"
+ * leaves it for the next call. If the flag cannot be read or written, the alert is raised anyway.
+ * Never throws.
+ */
+export async function reportOutage(env: Env, reason: string, log: Log, now: number = Date.now()): Promise<void> {
+  let flag: { reason: string; alerted: boolean } | null = null;
+  try {
+    await setOutage(env.DB, reason, now);
+    flag = await readOutage(env.DB);
+  } catch (err) {
+    log("error", `outage flag failed: ${message(err)}`);
+  }
+  if (flag?.alerted) return;
+  const result = await raiseAlert(env, "outage", flag?.reason ?? reason, log, now);
+  if (flag && (result === "sent" || result === "already")) {
+    await markOutageAlerted(env.DB, now).catch((err: unknown) => log("error", `outage flag failed: ${message(err)}`));
   }
 }
 

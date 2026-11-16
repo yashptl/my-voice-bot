@@ -86,18 +86,22 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 
 `GET /assistant/health` returns `ok`, `mode`, `demo`, and `missing`: the names, never the values, of missing required config (`TURNSTILE_SECRET`, `IP_HASH_KEY`, and `MINIMAX_API_KEY` outside demo mode) and, separately, of optional config (`ALERT_TO`). `ok` is false, with status 503, while anything required is missing.
 
-**Canary.** Every hour (cron `17 * * * *`) the Worker asks "Where does Yash work now?" through `/assistant/chat`, the way a visitor does, and logs `canary ok in <ms> ms` or `canary failed: <reason>`. The reason is an HTTP status, an error code, a missing event, `not configured` or `assistant is off` (it does not ask while `ASSISTANT_MODE` is `off`), never answer text. It spends one of the day's turns; once they are used up it does not ask, logs `canary skipped: resting` and that is not a failure. A 503 `resting` from the ask itself is a failure, `ledger unavailable` (the database is down). It sends no `cf-connecting-ip`, so it counts against the per-IP bucket `"unknown"` (24 a day, well under 60). Its turns are tagged `source = 'canary'`. To run it under `npm run dev`, open `/cdn-cgi/local/scheduled` on the dev server.
+**Canary.** Every hour (cron `17 * * * *`) the Worker asks "Where does Yash work now?" through `/assistant/chat`, the way a visitor does, and logs `canary ok in <ms> ms` or `canary failed: <reason>`. The reason is an HTTP status, an error code, a missing event, `not configured` or `assistant is off` (it does not ask while `ASSISTANT_MODE` is `off`), never answer text. It spends one of the day's turns; once they are used up it does not ask, logs `canary skipped: resting` and that is not a failure. A 503 `resting` from the ask itself is a failure, `ledger unavailable` (the database is down). A failure is run once more straight away. It sends no `cf-connecting-ip`, so it counts against the per-IP bucket `"unknown"` (24 a day, well under 60). Its turns are tagged `source = 'canary'`. To run it under `npm run dev`, open `/cdn-cgi/local/scheduled` on the dev server.
 
-**Alerts.** The cron emails the owner through the `ALERT_EMAIL` binding, from `ALERT_FROM` to the `ALERT_TO` secret, at most once per kind per UTC day (claimed in `daily` as `alert:<kind>` before sending):
+**Outage flag.** One row in D1 that rests the assistant for every visitor. A turn that ends `llm_auth` or `llm_quota` sets it, and so do two failed canary runs in a row; the first reason is kept. A canary that passes clears it. One outage sends one email, however long it lasts and across UTC days. A canary skipped as resting leaves the flag as it was.
+
+**Alerts.** Every failure a visitor could have seen emails the owner through the `ALERT_EMAIL` binding, from `ALERT_FROM` to the `ALERT_TO` secret, at most once per kind per UTC day (claimed in `daily` as `alert:<kind>` before sending):
 
 | Kind | When |
 | --- | --- |
-| `canary_failed` | the canary failed, with its reason |
+| `outage` | the flag was set (the provider's key or plan failed, or two canary runs failed), with the reason |
+| `answer_failed` | a visitor's answer ended in an error, or the canary failed once and then passed, with the code |
+| `voice_failed` | speech recognition or speech output failed (`stt_failed`, `tts_failed`, `tts_timeout`) |
 | `slow` | the canary took more than 10 s end to end |
 | `resting` | the day's shared turns are used up |
 | `misconfigured` | required config is missing (names listed) |
 
-The body is the kind, the UTC time and the reason, never visitor text. Without `ALERT_TO` or the binding, a warning is logged instead. If sending fails the claim is given back, so the next hour tries again. If the claim itself fails (the database is down), the email is sent anyway and the failure logged: at most one an hour during an outage. An assistant switched `off` on purpose raises nothing.
+The body is the kind, the UTC time and the reason, never visitor text. Without `ALERT_TO` or the binding, a warning is logged instead; staging has no binding, so nothing is sent there. If sending fails the claim is given back, so the next hour tries again. If the claim itself fails (the database is down), the email is sent anyway and the failure logged: at most one an hour during an outage. An assistant switched `off` on purpose raises nothing.
 
 ## Deploying
 

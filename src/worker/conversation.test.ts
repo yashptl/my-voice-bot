@@ -4,6 +4,7 @@ import { sqliteD1 } from "../../tests/sqlite-d1";
 import { MAX_BODY_BYTES } from "../protocol/chat";
 import type { ServerEvent } from "../protocol/events";
 import { SseParser } from "../protocol/sse";
+import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, parseToken } from "./auth";
 import type { Env } from "./env";
 import { used, utcDay, type LedgerUnit } from "./ledger";
@@ -50,12 +51,37 @@ const { Conversation, RETENTION_MS, readJson } = await import("./conversation");
 
 const DAY = 24 * 60 * 60 * 1000;
 
+/** A finished voice record, for calling the shell's turn hook directly. */
+const turnRecord = (): TurnRecord => ({
+  turnId: "turn-1",
+  conversationId: "conv-1",
+  mode: "voice",
+  protocol: 1,
+  model: "m",
+  promptHash: "p".repeat(64),
+  knowledgeHash: "k".repeat(64),
+  marks: {},
+  tokens: { input: 0, cachedInput: 0, reasoning: 0, reasoningEstimated: false, output: 0 },
+  ttsChars: 0,
+  audioInSeconds: 0,
+  costUsd: null,
+  coverage: null,
+  dataLine: null,
+  gate: { dropped: 0, reasons: [], flags: [] },
+  grounding: null,
+  interrupted: false,
+  error: null,
+});
+
 /** The storage calls the shell makes, in memory. */
 function fakeState() {
   const data = new Map<string, unknown>();
   let alarm: number | null = null;
+  /** Single-key reads of these keys reject, like a storage failure. */
+  const failKeys = new Set<string>();
   const storage = {
     async get(key: string | string[]) {
+      if (typeof key === "string" && failKeys.has(key)) throw new Error("storage unavailable");
       if (Array.isArray(key)) return new Map(key.filter((k) => data.has(k)).map((k) => [k, data.get(k)]));
       return structuredClone(data.get(key));
     },
@@ -71,7 +97,7 @@ function fakeState() {
     },
   };
   const waitUntil = (p: Promise<unknown>) => void p; // the promise runs on its own in tests
-  return { ctx: { storage, waitUntil } as unknown as DurableObjectState, data, alarm: () => alarm };
+  return { ctx: { storage, waitUntil } as unknown as DurableObjectState, data, failKeys, alarm: () => alarm };
 }
 
 describe("Conversation", () => {
@@ -195,7 +221,7 @@ async function chatSetup(
   const visitorCounts = () => db.sqlite.prepare("SELECT used FROM daily_ip ORDER BY used").all().map((r) => r.used);
   const turnRows = () => db.sqlite.prepare("SELECT * FROM turns").all();
   const gapRows = () => db.sqlite.prepare("SELECT * FROM gaps").all();
-  return { conversation, token: minted.token, data: s.data, spentToday, usedToday, visitorCounts, turnRows, gapRows, db };
+  return { conversation, token: minted.token, data: s.data, failKeys: s.failKeys, spentToday, usedToday, visitorCounts, turnRows, gapRows, db };
 }
 
 const IP = "203.0.113.7";
@@ -533,6 +559,85 @@ describe("Conversation POST /assistant/chat", () => {
       expect(events.at(-1)).toMatchObject({ type: "turn.end" });
       await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(expect.stringMatching(/outage flag failed: D1 unavailable/)));
     });
+  });
+
+
+  describe("alerts for visitor failures", () => {
+    const sentTo = () => {
+      const sent: { subject: string; text: string }[] = [];
+      const vars = {
+        ALERT_TO: "owner@example.test",
+        ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+      } as unknown as Partial<Env>;
+      return { sent, vars };
+    };
+
+    it("a visitor's turn that ends in a timeout raises answer_failed with the code as its reason", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: answer_failed"]));
+      expect(a.sent[0]?.text).toContain("llm_timeout_total");
+      expect(a.sent[0]?.text).not.toContain(QUESTION);
+    });
+
+    it("a quota failure goes through reportOutage: one outage email, no answer_failed", async () => {
+      failingModel.kind = "quota";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: "llm_quota", alerted: true }));
+      await sleep(0);
+      expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: outage"]);
+      expect(a.sent[0]?.text).toContain("llm_quota");
+    });
+
+    it("a canary conversation's failed answer raises no answer_failed (the hourly check reports it)", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars, source: "canary" });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(h.turnRows()).toHaveLength(1));
+      await sleep(10);
+      expect(a.sent).toEqual([]);
+    });
+
+    it("a stopped answer, and an answer that ended cleanly, raise nothing", async () => {
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)), (e) => e.type === "sentence");
+      await sleep(50);
+      const ok = await chatSetup({ vars: a.vars });
+      await readEvents(await ok.conversation.fetch(chat(ok.token)));
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
+
+    it("a record whose only error is a speech failure raises nothing from logTurn, because voice_failed covers it", async () => {
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      const logTurn = (h.conversation as unknown as { logTurn(r: object, log: () => void): void }).logTurn.bind(h.conversation);
+      for (const error of ["tts_failed", "tts_timeout"]) {
+        logTurn({ ...turnRecord(), error }, () => {});
+      }
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
+  });
+
+  it("a storage failure reading the conversation's source gives 503 resting outage, with the turn undone", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = await chatSetup();
+    h.failKeys.add("source");
+    expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
+    expect(h.data.get("turnsStarted")).toBe(0);
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/spend failed: storage unavailable/));
   });
 
   it("logs a stopped answer as interrupted", async () => {

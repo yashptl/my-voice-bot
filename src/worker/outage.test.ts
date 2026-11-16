@@ -5,9 +5,10 @@ import { watch } from "./watch";
 afterEach(() => vi.restoreAllMocks());
 
 /** The whole chain with D1 down: chat rests, the canary calls that a failure, the alert still goes out. */
-it("D1 down: the canary fails as 'ledger unavailable' and the owner is emailed anyway", async () => {
+it("D1 down: the canary fails twice as 'ledger unavailable' and the owner is emailed anyway", async () => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
+  let asked = 0;
   const sent: { subject: string; text: string }[] = [];
   const env = {
     ASSISTANT_MODE: "voice",
@@ -25,11 +26,12 @@ it("D1 down: the canary fails as 'ledger unavailable' and the owner is emailed a
       idFromName: (n: string) => n,
       get: () => ({
         init: async () => {},
-        fetch: async () => Response.json({ error: "resting", reason: "outage" }, { status: 503 }), // spendTurn fails closed
+        fetch: async () => (asked++, Response.json({ error: "resting", reason: "outage" }, { status: 503 })), // spendTurn fails closed
       }),
     },
   } as unknown as Env;
   await watch(env);
-  expect(sent.map((m) => m.subject)).toEqual(["Assistant alert: canary_failed"]);
+  expect(asked).toBe(2);
+  expect(sent.map((m) => m.subject)).toEqual(["Assistant alert: outage"]);
   expect(sent[0]?.text).toContain("ledger unavailable");
 });

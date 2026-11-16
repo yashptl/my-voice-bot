@@ -101,6 +101,11 @@ export interface VoiceLoopOptions {
    * The caller must never log it to the console.
    */
   onGap?(gap: Gap): void;
+  /**
+   * Called once per failure where `sttFailed` or `ttsFailed` logs, so the owner hears about speech
+   * that broke even though the visitor's conversation went on (or ended) without a server error.
+   */
+  onVoiceFailure?(reason: "stt_failed" | "tts_failed" | "tts_timeout"): void;
 }
 
 interface Turn {
@@ -501,6 +506,7 @@ export class VoiceLoop {
   private sttFailed(e: Error): void {
     if (this.closed) return;
     this.o.log?.("error", `stt failed: ${e.message}`);
+    this.o.onVoiceFailure?.("stt_failed");
     this.send({ type: "error", code: "provider", message: "Speech recognition stopped. Please reconnect." });
     this.end(CLOSE_PROVIDER, "speech recognition failed");
   }
@@ -765,6 +771,7 @@ export class VoiceLoop {
     t.ttsFailed = true;
     t.error ??= error;
     this.o.log?.("error", `tts failed: ${e.message}`);
+    this.o.onVoiceFailure?.(error);
     this.sendError("provider", "Speech output failed; the answer continues as text.");
   }
 

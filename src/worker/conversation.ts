@@ -9,11 +9,11 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { WS_SUBPROTOCOL } from "../protocol/version";
 import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
+import { raiseAlert, reportOutage } from "./alerts";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
 import { recordGap, type Gap } from "./gap-log";
 import { admitTurn, AUDIO_BLOCK_SECONDS, release, releaseAudio, reserve, reserveAudio, voiceUnitResting, type TurnSpend } from "./ledger";
-import { setOutage } from "./outage-flag";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
@@ -165,6 +165,7 @@ export class Conversation extends DurableObject<Env> {
       log,
       onRecord: (record) => this.logTurn(record, log),
       onGap: (gap) => this.logGap(gap, conversationId, log),
+      onVoiceFailure: (reason) => this.alert("voice_failed", reason, log),
     });
 
     const previous = this.live;
@@ -241,10 +242,13 @@ export class Conversation extends DurableObject<Env> {
       const state = await this.loadState(log);
       if (!state.startTurn()) return json({ error: "limit" }, 429);
       // Whatever makes the spend throw, the turn is undone and the visitor hears an outage, not a 500.
-      const spent = await admitTurn(this.env, clientIp(request), log, { skipOutage: await this.isCanary() }).catch((err: unknown): TurnSpend => {
-        log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
-        return "outage";
-      });
+      // The canary read is inside the guard too: a storage failure there is the same outage.
+      const spent = await this.isCanary()
+        .then((canary) => admitTurn(this.env, clientIp(request), log, { skipOutage: canary }))
+        .catch((err: unknown): TurnSpend => {
+          log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
+          return "outage";
+        });
       if (spent !== "ok") {
         state.undoTurn();
         return json({ error: "resting", reason: spent }, 503);
@@ -307,6 +311,10 @@ export class Conversation extends DurableObject<Env> {
   /**
    * Writes a finished turn's record to the turn log without waiting for it, so the visitor's stream
    * is never held up. A failure is logged (the record holds no visitor text) and the turn stands.
+   * A failed answer also reaches the owner: a failure that will not mend itself rests the assistant
+   * for everyone (reportOutage), any other raises `answer_failed` with the record's error code. Not
+   * raised: a turn the visitor cut short, a speech failure (`voice_failed` covers it) and, apart from
+   * an outage, the canary's turn (the hourly check judges that).
    */
   private logTurn(record: TurnRecord, log: Log): void {
     const at = Date.now();
@@ -316,16 +324,23 @@ export class Conversation extends DurableObject<Env> {
     })().catch((err: unknown) => {
       log("error", `turn log failed: ${err instanceof Error ? err.message : String(err)}`);
     });
-    // A failure that will not mend itself rests the assistant for everyone, whoever's turn met it.
-    if (record.error !== null && OUTAGE_ERRORS.has(record.error)) {
-      const reason = record.error;
+    const error = record.error;
+    if (error === null || record.interrupted) return;
+    if (OUTAGE_ERRORS.has(error)) {
+      this.ctx.waitUntil(reportOutage(this.env, error, log, at));
+    } else if (error !== "tts_failed" && error !== "tts_timeout") {
       this.ctx.waitUntil(
-        setOutage(this.env.DB, reason, at).then(
-          () => undefined,
-          (err: unknown) => log("error", `outage flag failed: ${err instanceof Error ? err.message : String(err)}`),
+        this.isCanary().then(
+          (canary) => (canary ? undefined : raiseAlert(this.env, "answer_failed", error, log, at)),
+          (err: unknown) => log("error", `answer alert failed: ${err instanceof Error ? err.message : String(err)}`),
         ),
       );
     }
+  }
+
+  /** An alert raised from a visitor's conversation, kept alive past the response; raiseAlert reports its own failures. */
+  private alert(kind: "voice_failed", reason: string, log: Log): void {
+    this.ctx.waitUntil(raiseAlert(this.env, kind, reason, log));
   }
 
   /** Whether this is the canary's conversation: it is admitted through an outage, to learn when the provider is back. */
