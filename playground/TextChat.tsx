@@ -3,22 +3,13 @@ import type { ChatMessage } from "../src/client/assistant-session";
 import { AssistantSession } from "../src/client/assistant-session";
 import { DISCLOSURE } from "../src/client/disclosure";
 import { useAssistant } from "../src/client/react";
+import { GREETING, MORE_QUESTIONS, STARTERS } from "../src/client/start-screen";
 import { getTurnstileToken, TEST_SITE_KEY } from "../src/client/turnstile";
 import { DEFAULT_BASE_URL } from "../src/client/urls";
 import { MAX_MESSAGE_CHARS } from "../src/protocol/limits";
 // no-inline: a small file would otherwise become a data: URL; the worklet must load same-origin.
 import workletUrl from "../src/client/capture-worklet.js?url&no-inline";
 import { Inspector } from "./Inspector";
-
-const STARTERS = [
-  "Where does Yash work now?",
-  "What has Yash built with AI?",
-  "Why hire Yash for a full-stack role?",
-  "How were you built?",
-];
-
-/** Fixed text with no model call, so it shows at once and says up front that this is an AI. */
-const GREETING = "Hi, I'm Yash's AI assistant. Ask me about Yash's work, projects and skills.";
 
 /**
  * The playground has no YashOS windows, so both point at the site. In YashOS they become
@@ -137,15 +128,27 @@ export function TextChat() {
       </div>
 
       {messages.length === 0 && !card && (
-        <ul className="starters" aria-label="Suggested questions">
-          {STARTERS.map((q) => (
-            <li key={q}>
-              <button type="button" className="chip" onClick={() => pickStarter(q)}>
-                {q}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="starters" aria-label="Suggested questions">
+            {STARTERS.map((s) => (
+              <li key={s.id}>
+                <button type="button" className="chip" onClick={() => pickStarter(s.text)}>
+                  {s.text}
+                </button>
+                {s.note && <small className="starter-note">{s.note}</small>}
+              </li>
+            ))}
+          </ul>
+          <ul className="starters more" aria-label="More questions">
+            {MORE_QUESTIONS.map((q) => (
+              <li key={q}>
+                <button type="button" className="chip" onClick={() => pickStarter(q)}>
+                  {q}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {card === "resting" && <RestingCard titleRef={noticeRef} back={resting === "outage" || status === "off" ? "soon" : "tomorrow"} />}

@@ -239,6 +239,21 @@ body {
   list-style: none;
 }
 
+.starters li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.starters.more {
+  margin-top: 8px;
+}
+
+.starter-note {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
 .chip {
   padding: 8px 14px;
   border: 1px solid var(--border);
