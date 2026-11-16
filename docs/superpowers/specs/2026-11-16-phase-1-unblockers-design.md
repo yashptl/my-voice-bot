@@ -134,6 +134,12 @@ the client does not know.
 - `off`, `resting` and `outdated` apply whether or not a session already existed (a renewal can
   discover them too).
 - `ChatMessage.error` can be `timeout`, `provider`, `connection`, and the rest as today.
+- "Unreachable" is the existing status `error`, unchanged: a network failure, a refused bot check,
+  a rate-limited or misconfigured `/session`, a malformed reply. The window shows one line for all
+  of them, so they stay one status.
+- Calling `start()` while the status is `resting` or `off` asks the server again (a new session,
+  the messages on screen kept), so a window that is reopened finds out the assistant is back
+  without a reload. Nothing polls.
 - The playground shows each new state in a plain way (a resting card whose second sentence follows
   the reason, an off line, an outdated line), so each can be seen locally.
 
@@ -142,12 +148,13 @@ the client does not know.
 **The flag.** One row in a new D1 table (migration `0007`):
 
 ```sql
-CREATE TABLE flags (name TEXT PRIMARY KEY, reason TEXT NOT NULL, set_at INTEGER NOT NULL);
+CREATE TABLE flags (name TEXT PRIMARY KEY, reason TEXT NOT NULL, set_at INTEGER NOT NULL, alerted_at INTEGER);
 ```
 
-The only flag is `outage`. A small module (`src/worker/outage.ts`) reads it, sets it (returning
-whether it was newly set) and clears it (returning whether it was set). `reason` is a code such as
-`llm_quota` or the canary's failure reason.
+The only flag is `outage`. A small module (`src/worker/outage-flag.ts`; `outage.test.ts` already
+exists for the database-down chain) reads it, sets it, marks it alerted and clears it. `reason` is
+a code such as `llm_quota` or the canary's failure reason. `alerted_at` is null until the owner's
+email for this outage has gone out.
 
 **Set by two triggers:**
 
@@ -157,10 +164,12 @@ whether it was newly set) and clears it (returning whether it was set). `reason`
   (2062, 1002 and the like) stay `rate_limit`. A failure of kind `auth` or `quota`, in text or voice,
   sets the flag at once, and that visitor's answer ends with `resting`, reason `outage`.
   - Only the 2062 burst refusal has ever been recorded (0001). Where the code sits in the response on
-    the Anthropic-compatible endpoint is unverified, so the adapter looks in the documented field
-    (`base_resp.status_code`) and wherever the recorded 2062 response shows it; an unrecognised
-    response keeps today's status-based kinds. The failure log line includes the code number, so the
-    first real case teaches us.
+    the Anthropic-compatible endpoint is unverified, and the repo holds no recorded response body
+    (0001 has prose only). So the adapter looks for a number in `base_resp.status_code`,
+    `error.code` and a top-level `code`, and failing those for one of the listed codes standing as a
+    whole number in the error message. An unrecognised response keeps today's status-based kinds;
+    a used-up plan that arrives as a plain 429 is then caught by the hourly check instead, which is
+    acceptable. The failure log line includes the code number, so the first real case teaches us.
 - **The hourly check fails twice in a row.** `watch()` runs the canary; if it fails for a reason other
   than "assistant is off" or "not configured", it runs it once more straight away. Two failures set
   the flag. One failure followed by a pass sets nothing and raises `answer_failed`. This covers every
@@ -177,12 +186,16 @@ it can find out the provider is back.
 
 | Kind | Raised when |
 | --- | --- |
-| `outage` (replaces `canary_failed`) | the flag is newly set, by either trigger. While it stays set, later failed checks send nothing, so one outage is one email even across days. |
+| `outage` (replaces `canary_failed`) | the flag is set and its email has not gone out yet. Once sent (or already claimed today), the flag is marked alerted and later failed checks send nothing, so one outage is one email even across days. If the send fails, the next failed hourly check tries again. |
 | `answer_failed` (new) | a visitor's answer ends with any other error (timeout, overloaded after its retry, rate limit, unknown), or the canary fails once and then passes |
 | `voice_failed` (new) | speech recognition or speech output fails during a visitor's voice session |
 | `slow`, `resting`, `misconfigured` | as today |
 
 Alerts from a visitor's turn run in `waitUntil`, never in the answer's path.
+
+One exception to "one email per outage", kept from today: when the database itself is down the flag
+cannot be written and the day's claim cannot be taken, so the email goes out unclaimed on each
+failed hourly check. An outage must not silence its own alert.
 
 ### 3. The long paste
 
@@ -193,7 +206,11 @@ Alerts from a visitor's turn run in `waitUntil`, never in the answer's path.
   the conversation's 30 (Fable's call: the paste stays in history and is re-read on every later
   question, so this caps a conversation at ten pastes).
 - If three do not fit, the turn is refused exactly as a single turn would be, and costs nothing.
-- Voice is unaffected; a transcript never gets that long.
+- Voice keeps today's 4,000-character cap on a transcript and always counts one turn. (Today the
+  transcript cap is tied to `MAX_MESSAGE_CHARS` through `src/core/sanitize.ts`; it gets its own
+  constant.)
+- The limit constants move to a zod-free protocol file, because the window needs them at runtime
+  for its character count and `chat.ts` imports zod as a value.
 - One new safety eval case: a job description of about 11,000 characters with an instruction buried
   in the middle.
 
@@ -221,8 +238,9 @@ The canary's question is separate and does not change.
   the worklet always come from the same copy. The Worker does not serve it.
 - **A test guards the vendoring contract.** Every runtime import reachable from the non-test files in
   `src/client` stays inside `src/client` or the zod-free protocol files, and no import uses a bundler
-  query (`?url`, `?raw`). Note for YashOS: the vendored protocol files import `zod` for types only,
-  so YashOS needs `zod` installed as a dev dependency to typecheck; none of it reaches its bundle.
+  query (`?url`, `?raw`). Note for YashOS: `chat.ts`, `events.ts` and `data-line.ts` import `zod` as a
+  value, and the client reaches them only through `import type`. So YashOS needs `zod` installed as
+  a dev dependency to typecheck the vendored files; none of it reaches its bundle.
 - **The route.** Production gets `routes: [{ pattern: "yashos.dev/assistant/*", zone_name: "yashos.dev" }]`,
   with `workers_dev` and `preview_urls` off, so the route is the only door. Cloudflare's docs list
   `routes` as a key environments inherit, so staging sets `routes: []` beside its
@@ -274,3 +292,7 @@ Each is easy to change.
 - `workers_dev` is off in production.
 - The blueprint is served as it is, including its Google Fonts link.
 - Dev CORS waits until YashOS needs it.
+- `error` stays one status for every way the assistant can be unreachable.
+- `start()` re-checks a resting or switched-off assistant; nothing polls.
+- The outage email is retried by the hourly check until it is sent, tracked on the flag's row.
+- With no recorded response to go on, the adapter looks for MiniMax's code in four places.

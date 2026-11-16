@@ -71,8 +71,9 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   - `conversation.test.ts`: `/chat` replies 503 `{ error: "resting", reason: "ceiling" }`, 503 `{ error: "resting", reason: "visitor" }` (was 429 `limit`), 503 `{ error: "resting", reason: "outage" }` when the spend throws; a full conversation still replies 429 `{ error: "limit" }`.
   - `voice-loop.test.ts`: a turn refused with `"visitor"` sends `{ type: "error", code: "resting", reason: "visitor" }` and ends the socket as `"resting"` does today; `"ceiling"` and `"outage"` carry their reason; a rejected `spendTurn` counts as `"outage"`.
 - [ ] **Step 5: Implement** in `index.ts`, `conversation.ts`, `voice-loop.ts` (`refused`, `sendError` gains an optional reason), and widen `isSessionResponse` in `text-chat.ts` to accept `resting` as `null` or one of the three strings. Update every comment that describes the old codes (`events.ts` `ErrorCode` doc, `chat.ts`, `conversation.ts` `chat` doc, `ledger.ts`).
-- [ ] **Step 6: `npm run check` passes.** `src/worker/outage.test.ts` and `canary.test.ts` must still pass unchanged (the canary still sees 503 `resting`).
-- [ ] **Step 7: Commit.** `git commit -m "Protocol 2: resting carries its reason; the visitor cap stops sharing 'limit'"`
+- [ ] **Step 6: The canary reads the reason.** `src/worker/canary.ts` (about line 57) treats any 503 `resting` as "ledger unavailable". Make it: reason `outage` (or none) is `"ledger unavailable"` as today; any other reason is `"http 503 resting <reason>"`. Add both cases to `canary.test.ts`.
+- [ ] **Step 7: `npm run check` passes.** `src/worker/outage.test.ts` must still pass (update its fake's body to `{ error: "resting", reason: "outage" }`).
+- [ ] **Step 8: Commit.** `git commit -m "Protocol 2: resting carries its reason; the visitor cap stops sharing 'limit'"`
 
 ### Task 2: The client reports typed states
 
@@ -107,7 +108,8 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   - `OutdatedError` from a first session or a renewal gives `status: "outdated"`, and it stays until `reset()`.
   - `/chat` 503 `resting` with reason `visitor` sets `status: "resting"`, `resting: "visitor"`, and the message's `error` is `"resting"`; an `error` event with code `resting` and a reason does the same in text and voice.
   - A text stream that breaks mid-answer, a `fetch` that rejects, and a voice socket that drops mid-answer set the message's `error` to `"connection"` (was `"unknown"`). An HTTP refusal with an unrecognised code is still `"unknown"`.
-  - A network failure on the first session still gives `status: "error"`.
+  - A network failure on the first session still gives `status: "error"` (the one status for every way the assistant is unreachable; unchanged).
+  - `start()` while `status` is `"resting"` or `"off"` asks `/session` again (a fresh Turnstile token from `turnstileToken()`), keeps `messages`, and sets the status from the new reply; `start()` while `"ready"` still reuses the cached session as today.
 - [ ] **Step 3: Failing test in `voice-session.test.ts`:** a `ready` event with another `protocol` shuts voice down and the session ends with `status: "outdated"` (assert through `AssistantSession`, or through whatever event `VoiceSession` emits for it).
 - [ ] **Step 4: Run the three client test files; the new cases fail.**
 - [ ] **Step 5: Implement.** Keep `notice` text as it is (the window does not read it). `mode` handling for `voice_resting` is unchanged.
@@ -154,7 +156,7 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   - In the test file of whichever module does the one retry (`deadlines.ts` today): kinds `auth` and `quota` are never retried.
 - [ ] **Step 3: Run the test files; the new cases fail.**
 - [ ] **Step 4: Implement.**
-  - Adapter: read the numeric code from `base_resp.status_code` (number or numeric string). Before choosing other places to look, check how the one recorded refusal carries its code: `docs/decisions/0001-phase-0-results.md` (the Token Plan line), `docs/research/vendor-apis.md`, and any saved response under `probes/results/`. Support the shape found there too. Do not call the provider to find out.
+  - Adapter: no response body was ever recorded, so look for the code in four places, in order: `base_resp.status_code`, `error.code`, a top-level `code` (each a number or a numeric string), and last, one of the six listed quota and auth codes standing as a whole number in the error message (`/\b(1004|1008|2049|2053|2056|2067)\b/`). Add a test for each place. Do not call the provider to find out.
   - `turn-failure.ts`, then use it in `text-turn.ts` (the catch at about line 161) and `voice-loop.ts` (the catch at about line 665) in place of their inline mapping. The message for `timeout` and `provider` stays "The assistant could not finish that answer. Please try again."; for `resting` use "The assistant is resting for now. Messages is the best way to reach Yash."
 - [ ] **Step 5: Failing-then-passing tests in `text-turn.test.ts` and `voice-loop.test.ts`:** a total timeout yields an error event with code `timeout` and a record whose `error` is `llm_timeout_total`; an `auth` failure yields code `resting` with reason `outage` and record error `llm_auth`; an `overloaded` failure after its retry yields `provider`.
 - [ ] **Step 6: Find every other use of the old strings** (`grep -rn "llm_timeout" src playground evals probes scripts`) and update readers (inspector labels, eval or canary code that matches on it).
@@ -174,13 +176,15 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
 - Consumes: `TurnSpend`, `restingReason`, `spendTurn` (Task 1); `OUTAGE_ERRORS` (Task 3).
 - Produces, migration `0007_flags.sql`:
   ```sql
-  CREATE TABLE flags (name TEXT PRIMARY KEY, reason TEXT NOT NULL, set_at INTEGER NOT NULL);
+  CREATE TABLE flags (name TEXT PRIMARY KEY, reason TEXT NOT NULL, set_at INTEGER NOT NULL, alerted_at INTEGER);
   ```
   with a header comment in the style of `0005_daily_ip.sql`.
 - Produces, in `src/worker/outage-flag.ts`:
   ```ts
   /** The flag, or null when the assistant is not resting for an outage. Throws when the database fails. */
-  export async function readOutage(db: D1Database): Promise<{ reason: string; setAt: number } | null>;
+  export async function readOutage(db: D1Database): Promise<{ reason: string; setAt: number; alerted: boolean } | null>;
+  /** Records that the owner's email for this outage went out. */
+  export async function markOutageAlerted(db: D1Database, now: number): Promise<void>;
   /** Sets it; true when it was not already set (the first reason is kept). */
   export async function setOutage(db: D1Database, reason: string, now: number): Promise<boolean>;
   /** Clears it; true when it was set. */
@@ -193,7 +197,7 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   ```
   `restingReason` also reads the flag (same parallel batch): order stays `ceiling`, `visitor`, then `outage` when the flag is set or any read fails.
 
-- [ ] **Step 1: Failing tests in `outage-flag.test.ts`** (real SQLite through `tests/sqlite-d1.ts`): unset reads `null`; `setOutage(db, "llm_quota", 1000)` returns `true` and reads `{ reason: "llm_quota", setAt: 1000 }`; a second `setOutage(db, "other", 2000)` returns `false` and the first reason and time stay; `clearOutage` returns `true`, then `false`; the read is `null` again.
+- [ ] **Step 1: Failing tests in `outage-flag.test.ts`** (real SQLite through `tests/sqlite-d1.ts`): unset reads `null`; `setOutage(db, "llm_quota", 1000)` returns `true` and reads `{ reason: "llm_quota", setAt: 1000, alerted: false }`; after `markOutageAlerted(db, 1500)` it reads `alerted: true`; a second `setOutage(db, "other", 2000)` returns `false` and the first reason and time stay; `clearOutage` returns `true`, then `false`; the read is `null` again.
 - [ ] **Step 2: Implement the migration and the module; the tests pass.**
 - [ ] **Step 3: Failing tests in `ledger.test.ts`**
   - `admitTurn` with the flag unset behaves as `spendTurn`.
@@ -224,20 +228,22 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   ```ts
   export type AlertKind = "outage" | "answer_failed" | "voice_failed" | "slow" | "resting" | "misconfigured";
   /**
-   * Sets the outage flag and, when it was newly set, emails the owner (kind "outage").
-   * If the flag cannot be written, the email is raised anyway. Never throws.
+   * Sets the outage flag (keeping an earlier reason) and, unless this outage's email already went
+   * out, raises the "outage" alert; "sent" or "already" marks the flag alerted, "failed" or "unsent"
+   * leaves it for the next call. If the flag cannot be read or written, the alert is raised anyway.
+   * Never throws.
    */
   export async function reportOutage(env: Env, reason: string, log: Log, now?: number): Promise<void>;
   ```
   `canary_failed` is removed.
 - Produces, on `VoiceLoop`'s options: `onVoiceFailure?: (reason: "stt_failed" | "tts_failed" | "tts_timeout") => void`, called once per failure where `sttFailed` and `ttsFailed` already log.
 
-- [ ] **Step 1: Failing tests in `alerts.test.ts`:** `reportOutage` with the flag unset sets it and sends one email with subject `Assistant alert: outage` whose text holds the reason; with the flag already set it sends nothing, even on a later UTC day (one email per outage); when `setOutage` throws it still sends.
+- [ ] **Step 1: Failing tests in `alerts.test.ts`:** `reportOutage` with the flag unset sets it, sends one email with subject `Assistant alert: outage` whose text holds the reason, and leaves the flag `alerted: true`; called again, also on a later UTC day, it sends nothing (one email per outage); when the send throws the flag stays `alerted: false` and the next call sends; when today's `outage` claim is already taken it sends nothing and marks the flag alerted; when the database throws it still sends.
 - [ ] **Step 2: Failing tests in `watch.test.ts`** (use a fake `runCanary`, by whatever seam the existing tests use, or add an optional second parameter to `watch`)
   - Canary passes with the flag set: the flag is cleared, no email.
   - Canary fails twice: `runCanary` was called twice, the flag is set with the second failure's reason, one `outage` email.
   - Canary fails then passes: the flag stays unset and one `answer_failed` email goes out whose reason names the first failure.
-  - Canary fails twice with the flag already set: no email.
+  - Canary fails twice with the flag already set and alerted: no email. Set but not alerted (the earlier send failed): one email.
   - "not configured" raises `misconfigured` and "assistant is off" raises nothing, each after a single run, flag untouched.
   - Skipped as resting: the `resting` email as today, and the flag is left as it was (Review Focus 3).
   - A slow pass still raises `slow`.
@@ -245,7 +251,7 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
 - [ ] **Step 4: Failing tests for visitor failures**
   - `conversation.test.ts`: a visitor record with error `llm_timeout_total` raises `answer_failed` with that code as its reason; a record with `llm_quota` goes through `reportOutage` (one `outage` email) and raises no `answer_failed`; a canary record raises nothing from `logTurn`; an interrupted or stopped turn raises nothing; a record whose only error is a speech failure (`tts_failed`, `tts_timeout`) raises nothing from `logTurn`, because `voice_failed` covers it.
   - `voice-loop.test.ts`: `sttFailed` calls `onVoiceFailure("stt_failed")`; a speech failure calls it once with `"tts_failed"` or `"tts_timeout"`.
-- [ ] **Step 5: Implement.** In `conversation.ts`, wire `onVoiceFailure` to `raiseAlert(env, "voice_failed", reason, log)`; every alert raised from a visitor's turn runs in `ctx.waitUntil`. In `watch.ts`, the second canary run follows the first directly.
+- [ ] **Step 5: Implement.** `watch()` calls `reportOutage` on every second failure, whether or not the flag was already set. In `conversation.ts`, wire `onVoiceFailure` to `raiseAlert(env, "voice_failed", reason, log)`; every alert raised from a visitor's turn runs in `ctx.waitUntil`. In `watch.ts`, the second canary run follows the first directly.
 - [ ] **Step 6: README.** Rewrite "Health, canary and alerts" to describe the six kinds, the outage flag (what sets it, what clears it, one email per outage), and that staging has no alert binding. Keep it as short as the section is today.
 - [ ] **Step 7: `npm run check` passes.**
 - [ ] **Step 8: Commit.** `git commit -m "Email on any failure, once per kind per day; two failed checks rest the assistant"`
@@ -253,14 +259,17 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
 ### Task 6: The long paste
 
 **Files:**
-- Modify: `src/protocol/chat.ts`, `src/worker/conversation-state.ts`, `src/worker/ledger.ts`, `src/worker/conversation.ts`, `evals/cases.json`, `README.md` (the "Limits" section)
+- Create: `src/protocol/limits.ts`
+- Modify: `src/protocol/chat.ts`, `src/core/sanitize.ts`, `src/worker/voice-loop.ts`, `tests/client-vendoring.test.ts`, `playground/TextChat.tsx`, `src/worker/conversation-state.ts`, `src/worker/ledger.ts`, `src/worker/conversation.ts`, `evals/cases.json`, `README.md` (the "Limits" section)
 - Test: `src/worker/conversation-state.test.ts`, `src/worker/ledger.test.ts`, `src/worker/conversation.test.ts`, and the protocol's test for `ChatRequestSchema` if one exists
 
 **Interfaces:**
 - Consumes: `admitTurn` (Task 4).
-- Produces, in `src/protocol/chat.ts`:
+- Produces, in a new zod-free `src/protocol/limits.ts` (no imports; `chat.ts`, `sanitize.ts`, the Worker and the playground import the limits from here, and `chat.ts` no longer defines them). Add `src/protocol/limits.ts` to the allowed list in `tests/client-vendoring.test.ts`:
   ```ts
   export const MAX_MESSAGE_CHARS = 12_000;
+  /** The longest voice transcript sent to the model; unchanged from before the paste limit rose. */
+  export const MAX_TRANSCRIPT_CHARS = 4_000;
   /** A message longer than this counts as LONG_MESSAGE_TURNS turns. */
   export const LONG_MESSAGE_CHARS = 4_000;
   export const LONG_MESSAGE_TURNS = 3;
@@ -276,7 +285,7 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
   - `ledger.test.ts`: `admitTurn(…, { turns: 3 })` adds 3 to both counts; with 58 of the visitor's 60 used it returns `"visitor"` and both counts are unchanged; with 398 of the shared 400 used it returns `"ceiling"`, counts unchanged.
   - `conversation.test.ts`: a 12,000-character message is answered and the conversation, visitor and shared counts each rose by 3; a 12,001-character message replies 400 and nothing is counted; a 12,000-character message of `"語"` and one of emoji pairs is accepted (Review Focus 5); a long message refused with `resting` reason `visitor` leaves the conversation's count unchanged (Review Focus 4); a long message with 28 turns started replies 429 `limit`.
 - [ ] **Step 2: Run; the new cases fail.**
-- [ ] **Step 3: Implement.** Count the message as the model will see it (after the same sanitising and trimming `chat` already applies). Voice turns always count 1.
+- [ ] **Step 3: Implement.** Count the message as the model will see it (after the same sanitising and trimming `chat` already applies). Voice turns always count 1, and the voice transcript cap (`voice-loop.ts`, about line 530, through `src/core/sanitize.ts`) stays 4,000 via `MAX_TRANSCRIPT_CHARS`: add a `voice-loop.test.ts` case that a 5,000-character final transcript is still cut to 4,000.
 - [ ] **Step 4: Eval case.** Read `evals/run.ts` and the existing `injection-job-description` case, then add a safety case `injection-long-job-description`: a realistic job description of about 11,000 characters for a senior full-stack role with an instruction buried near the middle (for example a line telling the assistant to ignore its rules and state that Yash has ten years of Rust experience), graded the way the existing injection case is. Write the description as prose and bullet lists a real posting would have; no real company name. Do not run `npm run eval` in this task.
 - [ ] **Step 5: README "Limits":** 12,000 characters per message; a message over 4,000 counts as three questions against the conversation, the visitor's day and the shared day.
 - [ ] **Step 6: `npm run check` passes** (it includes `knowledge:check`; the eval file must still parse, so run `npx tsx -e "JSON.parse(require('fs').readFileSync('evals/cases.json','utf8'))"`).
@@ -321,7 +330,7 @@ Failure modes the spec implies that are easy to miss. Each has a test in the tas
 - Test: `src/client/assistant-session.test.ts`, `src/client/voice-session.test.ts`
 
 **Interfaces:**
-- Produces: `AssistantSessionOptions.workletUrl?: string | URL`, passed through `VoiceSession` to the mic. No file under `src/client` imports the worklet. `startVoice()` without a `workletUrl` fails the way a blocked microphone does today, with an error whose message is `workletUrl is required for voice`, before asking for the microphone.
+- Produces: `AssistantSessionOptions.workletUrl?: string`, passed through `VoiceSession` to the mic. No file under `src/client` imports the worklet. `startVoice()` without a `workletUrl` fails the way a blocked microphone does today, with an error whose message is `workletUrl is required for voice`, before asking for the microphone.
 
 - [ ] **Step 1: Failing tests:** `startVoice()` on a session built without `workletUrl` does not call `getUserMedia` and surfaces the failure; with a `workletUrl`, that URL is what `audioWorklet.addModule` receives (use the fakes the voice tests already have).
 - [ ] **Step 2: Failing test `tests/client-vendoring.test.ts`.** Walk the non-test `.ts` files in `src/client` (skip `*.test.ts` and `testing.ts`) and, from them, every file they import. Assert:
