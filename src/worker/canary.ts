@@ -28,7 +28,8 @@ export interface CanaryResult {
  * turn.end whose record has no error. Not asked, with a reason: the assistant is off, or required
  * config is missing ("not configured"). Not asked, and ok: today's shared turns are used up
  * (`skipped: "resting"`), which is the assistant doing its job; that needs this read to have succeeded.
- * A 503 `resting` from the ask without that is a failure, "ledger unavailable"; the database is down.
+ * A 503 `resting` from the ask without that, with reason `outage` (or none), is a failure, "ledger unavailable";
+ * the database is down. Any other reason is reported as the answer gave it.
  */
 export async function runCanary(env: Env, now: () => number = () => Date.now()): Promise<CanaryResult> {
   const startedAt = now();
@@ -51,11 +52,16 @@ export async function runCanary(env: Env, now: () => number = () => Date.now()):
       }),
     );
     if (res.status !== 200 || !res.body) {
-      const error = ((await res.json().catch(() => null)) as { error?: unknown } | null)?.error;
+      const body = (await res.json().catch(() => null)) as { error?: unknown; reason?: unknown } | null;
+      const error = body?.error;
       // Used-up turns returned above, so a resting refusal here means the ledger is failing (or the last
       // turn went between the read and the ask, which is rare enough to report).
-      if (res.status === 503 && error === "resting") return result("ledger unavailable");
-      return result(`http ${res.status}${typeof error === "string" ? ` ${error}` : ""}`);
+      // Only an outage reason (or none) says the ledger failed; any other reason is reported as it came.
+      if (res.status === 503 && error === "resting" && (body?.reason === undefined || body.reason === "outage")) {
+        return result("ledger unavailable");
+      }
+      const reason = error === "resting" && typeof body?.reason === "string" ? ` ${body.reason}` : "";
+      return result(`http ${res.status}${typeof error === "string" ? ` ${error}` : ""}${reason}`);
     }
     return result(await checkAnswer(res.body));
   } catch (err) {

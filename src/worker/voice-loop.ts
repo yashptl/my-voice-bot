@@ -9,7 +9,7 @@ import type { SttEvent, SttPort, SttSession } from "../ports/stt";
 import type { TtsPort, TtsSession } from "../ports/tts";
 import { encodeAudioFrame, MIC_FRAME_BYTES } from "../protocol/audio";
 import type { DataLine, DataLineStatus } from "../protocol/data-line";
-import type { ClientMessage, ErrorCode, ServerEvent } from "../protocol/events";
+import type { ClientMessage, ErrorCode, RestingReason, ServerEvent } from "../protocol/events";
 import type { GateSummary, GroundingResult, Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import { MIC_BYTES_PER_SECOND, type ConversationState, type Log } from "./conversation-state";
@@ -689,7 +689,7 @@ export class VoiceLoop {
     const ledger = this.o.ledger;
     if (!ledger) return !t.stopped;
     const [spent, day] = await Promise.all([
-      ledger.spendTurn().catch((): TurnSpend => "resting"),
+      ledger.spendTurn().catch((): TurnSpend => "outage"),
       ledger.reserve("tts_chars", MAX_SPOKEN_CHARS).catch(() => null),
     ]);
     if (day !== null) t.ttsReserved = { day, chars: MAX_SPOKEN_CHARS };
@@ -711,8 +711,8 @@ export class VoiceLoop {
 
   /**
    * A turn a daily ceiling refused: no answer, so the conversation's turn and the speech
-   * reservation are given back. `limit` (the visitor's day) or `resting` (everyone's, or the
-   * ledger failing) is sent and the conversation ends.
+   * reservation are given back. A `resting` error carrying why (the visitor's day, everyone's, or
+   * the ledger failing) is sent and the conversation ends.
    */
   private refused(t: Turn, spent: Exclude<TurnSpend, "ok">): void {
     this.o.state.undoTurn();
@@ -720,11 +720,7 @@ export class VoiceLoop {
     if (t.stopped) return; // interrupted or closed meanwhile: nothing more is sent
     if (this.current === t) this.current = null;
     this.stop(t);
-    if (spent === "limit") {
-      this.sendError("limit", "That is all the questions one visitor can ask today. Messages is the best way to reach Yash.");
-      return this.end(CLOSE_POLICY, "visitor limit");
-    }
-    this.sendError("resting", "The assistant is resting for now. Messages is the best way to reach Yash.");
+    this.sendError("resting", "The assistant is resting for now. Messages is the best way to reach Yash.", spent);
     this.end(CLOSE_POLICY, "resting");
   }
 
@@ -770,8 +766,8 @@ export class VoiceLoop {
     this.sendError("provider", "Speech output failed; the answer continues as text.");
   }
 
-  private sendError(code: ErrorCode, message: string): void {
-    this.send({ type: "error", code, message });
+  private sendError(code: ErrorCode, message: string, reason?: RestingReason): void {
+    this.send(reason ? { type: "error", code, message, reason } : { type: "error", code, message });
   }
 
   private mark(t: Turn, mark: Mark): void {

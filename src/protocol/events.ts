@@ -8,9 +8,15 @@ export type AssistantMode = "voice" | "text" | "off";
 export type AssistantState = "listening" | "thinking" | "speaking" | "idle";
 
 /**
- * `limit`: this conversation used its questions or audio. `resting`: the day's shared ceiling is
- * reached, so the client shows the static card (pitch, resume, Messages) instead of the assistant.
- * `busy`: a text answer is still streaming in this conversation.
+ * Why the assistant rests: `ceiling`, the day's shared ceiling is reached; `visitor`, this visitor
+ * used their own daily allowance; `outage`, the ledger could not be read or spent (it fails closed).
+ */
+export type RestingReason = "ceiling" | "visitor" | "outage";
+
+/**
+ * `limit`: this conversation used its questions or audio. `resting`: the assistant is resting for
+ * this visitor, and `reason` says why, so the client shows the static card (pitch, resume, Messages)
+ * instead of the assistant. `busy`: a text answer is still streaming in this conversation.
  */
 export type ErrorCode =
   | "rate_limited"
@@ -68,7 +74,7 @@ export type ServerEvent =
    */
   | { type: "stt"; status: "closed"; session: number; openForMs: number; idleMs: number | null }
   | { type: "stt"; status: "reopened"; session: number }
-  | { type: "error"; code: ErrorCode; message: string };
+  | { type: "error"; code: ErrorCode; message: string; reason?: RestingReason };
 
 const turnId = z.string().min(1).max(128);
 

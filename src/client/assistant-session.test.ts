@@ -77,7 +77,7 @@ const fakeFetch = vi.fn<typeof fetch>(async (input, init) => {
       protocol: PROTOCOL_VERSION,
       mode: "text",
       expiresAt: t + 600_000,
-      resting: false,
+      resting: null,
       ...sessionTemplate,
     });
   }
@@ -153,7 +153,7 @@ describe("start", () => {
     await off.start();
     expect(off.snapshot).toMatchObject({ status: "off", mode: "off" });
 
-    sessionTemplate = { resting: true };
+    sessionTemplate = { resting: "ceiling" };
     const resting = make();
     await resting.start();
     expect(resting.snapshot.status).toBe("resting");
@@ -173,7 +173,7 @@ describe("start", () => {
   });
 
   it("does not ask when the assistant is off or resting", async () => {
-    sessionTemplate = { resting: true };
+    sessionTemplate = { resting: "ceiling" };
     const s = make();
     await s.start();
     await s.ask("hello");
@@ -317,7 +317,7 @@ describe("ask", () => {
     const s = make();
     await s.start();
     t += 590_000; // inside the renewal margin
-    sessionTemplate = { resting: true };
+    sessionTemplate = { resting: "ceiling" };
     await s.ask("hi");
     expect(s.snapshot.status).toBe("resting");
     expect(s.snapshot.messages).toEqual([]);

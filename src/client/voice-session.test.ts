@@ -9,7 +9,7 @@ import { VoiceSession, type VoiceSessionEvent } from "./voice-session";
 vi.mock("./mic", () => ({ startMic: vi.fn(async () => ({ stop: vi.fn(), setMuted: vi.fn() })) }));
 
 const BASE = "https://yashos.dev/assistant";
-const SESSION: SessionResponse = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "voice", expiresAt: 9e12, resting: false };
+const SESSION: SessionResponse = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "voice", expiresAt: 9e12, resting: null };
 const READY = { type: "ready", protocol: PROTOCOL_VERSION, mode: "voice", audio: VOICE_FORMAT };
 
 const WORKLET_URL = "/assets/capture-worklet.js";

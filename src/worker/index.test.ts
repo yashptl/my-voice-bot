@@ -6,7 +6,7 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
-import { reserveAudio, spend, spendVisitor, utcDay } from "./ledger";
+import { reserveAudio, spend, spendTurn, spendVisitor, utcDay } from "./ledger";
 import { recordGap } from "./gap-log";
 import { recordTurn } from "./turn-log";
 
@@ -181,7 +181,7 @@ describe("POST /assistant/session", () => {
 
   it("answers 503 mode off before anything else", async () => {
     const h = setup({ mode: "off" });
-    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { mode: "off" } });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "off" } });
     expect(h.keys).toEqual([]);
   });
 
@@ -241,32 +241,40 @@ describe("POST /assistant/session", () => {
     return db;
   }
 
-  it("mints a conversation once Turnstile passes, with resting false under the day's ceiling", async () => {
+  it("mints a conversation once Turnstile passes, with resting null under the day's ceiling", async () => {
     const h = setup({ db: await spentToday(399) });
     fakeSiteverify({ success: true });
     const before = Date.now();
     const res = await json(await call(sessionRequest(), h.env));
     expect(res).toEqual({
       status: 200,
-      body: { token: expect.any(String), protocol: 1, mode: "voice", expiresAt: expect.any(Number), resting: false },
+      body: { token: expect.any(String), protocol: 2, mode: "voice", expiresAt: expect.any(Number), resting: null },
     });
     const secret = String(res.body.token).split(".")[1] ?? "";
     expect(h.inits).toEqual([[await sha256Hex(secret), res.body.expiresAt]]);
     expect(Number(res.body.expiresAt)).toBeGreaterThanOrEqual(before + 30 * 60_000);
   });
 
-  it("says resting once the day's turns are used", async () => {
+  it("says resting ceiling once the day's turns are used", async () => {
     const h = setup({ db: await spentToday(400) });
     fakeSiteverify({ success: true });
-    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe(true);
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("ceiling");
   });
 
-  it("says resting, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
+  it("says resting visitor once this visitor's own turns are used, while the day has room", async () => {
+    const h = setup({ db: sqliteD1() });
+    h.env.DAILY_TURNS_PER_IP = "1";
+    expect(await spendTurn(h.env, "203.0.113.7", vi.fn())).toBe("ok");
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("visitor");
+  });
+
+  it("says resting outage, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
     const h = setup({ db: brokenDb() });
     fakeSiteverify({ success: true });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await json(await call(sessionRequest(), h.env));
-    expect(res).toMatchObject({ status: 200, body: { resting: true, mode: "text" } });
+    expect(res).toMatchObject({ status: 200, body: { resting: "outage", mode: "text" } });
     expect(error).toHaveBeenCalledWith("ledger failed: D1 unavailable");
   });
 
@@ -279,7 +287,7 @@ describe("POST /assistant/session", () => {
       await spend(db, unit, n, n, utcDay(Date.now()));
       const h = setup({ db });
       fakeSiteverify({ success: true });
-      expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: false });
+      expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: null });
     }
   });
 
@@ -290,7 +298,7 @@ describe("POST /assistant/session", () => {
     fakeSiteverify({ success: true });
     expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "voice" });
     for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.7", 15, vi.fn());
-    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "text", resting: false });
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "text", resting: null });
   });
 
   it("keeps mode text and off as they are", async () => {
@@ -304,7 +312,7 @@ describe("POST /assistant/session", () => {
 describe("POST /assistant/chat", () => {
   it("answers 503 mode off", async () => {
     const h = setup({ mode: "off" });
-    expect(await json(await call(chatRequest(), h.env))).toEqual({ status: 503, body: { mode: "off" } });
+    expect(await json(await call(chatRequest(), h.env))).toEqual({ status: 503, body: { error: "off" } });
     expect(h.forwarded).toEqual([]);
   });
 
@@ -348,7 +356,7 @@ describe("GET /assistant/health", () => {
       status: 200,
       body: {
         ok: true,
-        protocol: 1,
+        protocol: 2,
         mode: "voice",
         demo: false,
         missing: { required: [], optional: ["ALERT_TO"] },

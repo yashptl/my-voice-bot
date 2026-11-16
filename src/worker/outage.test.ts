@@ -25,7 +25,7 @@ it("D1 down: the canary fails as 'ledger unavailable' and the owner is emailed a
       idFromName: (n: string) => n,
       get: () => ({
         init: async () => {},
-        fetch: async () => Response.json({ error: "resting" }, { status: 503 }), // spendTurn fails closed
+        fetch: async () => Response.json({ error: "resting", reason: "outage" }, { status: 503 }), // spendTurn fails closed
       }),
     },
   } as unknown as Env;

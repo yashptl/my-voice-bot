@@ -116,7 +116,7 @@ function isSessionResponse(x: unknown): x is SessionResponse {
     typeof x.protocol === "number" &&
     (x.mode === "voice" || x.mode === "text" || x.mode === "off") &&
     typeof x.expiresAt === "number" &&
-    typeof x.resting === "boolean"
+    (x.resting === null || x.resting === "ceiling" || x.resting === "visitor" || x.resting === "outage")
   );
 }
 

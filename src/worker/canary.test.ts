@@ -92,9 +92,9 @@ describe("runCanary", () => {
     expect((await runCanary(h.env, h.now)).skipped).toBeUndefined();
   });
 
-  const resting = () => Response.json({ error: "resting" }, { status: 503 });
+  const resting = () => Response.json({ error: "resting", reason: "outage" }, { status: 503 });
 
-  it("fails with 'ledger unavailable' on a 503 resting, since a skip needs its own read to show the turns used up", async () => {
+  it("fails with 'ledger unavailable' on a 503 resting with reason outage (or none), since a skip needs its own read to show the turns used up", async () => {
     const left = setup({ reply: resting });
     expect(await runCanary(left.env, left.now)).toEqual({ ok: false, ms: 450, reason: "ledger unavailable" });
     const down = setup({ reply: resting });
@@ -105,6 +105,15 @@ describe("runCanary", () => {
     };
     expect(await runCanary(down.env, down.now)).toEqual({ ok: false, ms: 450, reason: "ledger unavailable" });
     expect(down.requests).toHaveLength(1); // it still asked, as visitors would
+    const bare = setup({ reply: () => Response.json({ error: "resting" }, { status: 503 }) });
+    expect(await runCanary(bare.env, bare.now)).toEqual({ ok: false, ms: 450, reason: "ledger unavailable" });
+  });
+
+  it("names any other resting reason, since the ledger itself answered", async () => {
+    for (const reason of ["ceiling", "visitor"]) {
+      const h = setup({ reply: () => Response.json({ error: "resting", reason }, { status: 503 }) });
+      expect(await runCanary(h.env, h.now)).toEqual({ ok: false, ms: 450, reason: `http 503 resting ${reason}` });
+    }
   });
 
   it("is ok when the answer has a sentence, a meta and a clean turn.end, timed end to end", async () => {

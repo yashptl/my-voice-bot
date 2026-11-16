@@ -214,8 +214,9 @@ export class Conversation extends DurableObject<Env> {
 
   /**
    * One text answer, streamed as server-sent events. Checks in order: token (401), body (400), an
-   * answer already streaming (409), the conversation's turns (429 `limit`), then the visitor's turns
-   * today (429 `limit`) and everyone's (503 `resting`). The conversation's turn is counted first,
+   * answer already streaming (409), the conversation's turns (429 `limit`), then the day's turns
+   * (503 `resting` with a `reason`: `visitor` for this visitor's own, `ceiling` for everyone's,
+   * `outage` when the ledger fails). The conversation's turn is counted first,
    * with no await between check and count, so a voice turn on the same conversation cannot take the
    * last one too; a refused spend gives it back.
    * The answer stops, and stops costing, when the visitor aborts the request or the response
@@ -237,14 +238,14 @@ export class Conversation extends DurableObject<Env> {
       const hash = await (this.hash ??= promptHash(buildStable(bundle)));
       const state = await this.loadState(log);
       if (!state.startTurn()) return json({ error: "limit" }, 429);
-      // Whatever makes the spend throw, the turn is undone and the visitor hears "resting", not a 500.
+      // Whatever makes the spend throw, the turn is undone and the visitor hears an outage, not a 500.
       const spent = await spendTurn(this.env, clientIp(request), log).catch((err: unknown): TurnSpend => {
         log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
-        return "resting";
+        return "outage";
       });
       if (spent !== "ok") {
         state.undoTurn();
-        return spent === "limit" ? json({ error: "limit" }, 429) : json({ error: "resting" }, 503);
+        return json({ error: "resting", reason: spent }, 503);
       }
 
       const stop = new AbortController();

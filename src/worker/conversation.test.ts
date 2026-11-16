@@ -285,11 +285,11 @@ describe("Conversation POST /assistant/chat", () => {
     expect((await h.conversation.fetch(chat(h.token))).status).toBe(429); // not stuck busy
   });
 
-  it("answers 503 resting when the day's ceiling is reached, giving back the visitor's and the conversation's turn", async () => {
+  it("answers 503 resting with its reason when the day's ceiling is reached or the ledger fails, giving back the visitor's and the conversation's turn", async () => {
     const refused = await chatSetup({ db: "refuse" });
     expect(await json(await refused.conversation.fetch(chat(refused.token)))).toEqual({
       status: 503,
-      body: { error: "resting" },
+      body: { error: "resting", reason: "ceiling" },
     });
     expect(refused.visitorCounts()).toEqual([0]);
     expect(refused.data.get("turnsStarted")).toBe(0);
@@ -299,7 +299,7 @@ describe("Conversation POST /assistant/chat", () => {
     const broken = await chatSetup({ db: "throw" });
     expect(await json(await broken.conversation.fetch(chat(broken.token)))).toEqual({
       status: 503,
-      body: { error: "resting" },
+      body: { error: "resting", reason: "outage" },
     });
     expect(errors).toHaveBeenCalledWith(expect.stringMatching(/ledger failed: D1 unavailable/));
     expect(refused.turnRows()).toEqual([]); // no model call, so nothing to log
@@ -312,27 +312,36 @@ describe("Conversation POST /assistant/chat", () => {
     const ok = await num.conversation.fetch(chat(num.token));
     expect(ok.status).toBe(200);
     await readEvents(ok);
-    // Anything else pauses (0), and whatever else throws inside the spend is a resting answer too.
+    // Anything else pauses (0): the ceiling. Whatever else throws inside the spend is an outage.
     for (const v of [{}, null, 1.5]) {
       const h = await chatSetup({ vars: { DAILY_TURNS: v as unknown as string } });
-      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({ status: 503, body: { error: "resting" } });
+      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "ceiling" },
+      });
       expect(h.data.get("turnsStarted")).toBe(0);
     }
     const odd = await chatSetup({ vars: { DAILY_TURNS_PER_IP: { toString: () => "x" } as unknown as string } });
     (odd.conversation as unknown as { env: { IP_HASH_KEY: unknown } }).env.IP_HASH_KEY = { throws: 1 };
-    expect(await json(await odd.conversation.fetch(chat(odd.token)))).toEqual({ status: 503, body: { error: "resting" } });
+    expect(await json(await odd.conversation.fetch(chat(odd.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
     expect(odd.data.get("turnsStarted")).toBe(0);
     expect((await odd.conversation.fetch(chat(odd.token))).status).toBe(503); // not stuck busy
   });
 
-  it("answers 429 limit once the visitor's IP has used its turns today, giving back everyone's and the conversation's", async () => {
+  it("answers 503 resting, reason visitor, once the visitor's IP has used its turns today, giving back everyone's and the conversation's", async () => {
     const sqlite = sqliteD1();
     const vars = { DAILY_TURNS_PER_IP: "1" };
     const first = await chatSetup({ sqlite, vars });
     await readEvents(await first.conversation.fetch(chat(first.token)));
     // A new conversation from the same IP shares the visitor's count; another IP has its own.
     const second = await chatSetup({ sqlite, vars });
-    expect(await json(await second.conversation.fetch(chat(second.token)))).toEqual({ status: 429, body: { error: "limit" } });
+    expect(await json(await second.conversation.fetch(chat(second.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "visitor" },
+    });
     expect(await second.spentToday()).toBe(1);
     expect(second.data.get("turnsStarted")).toBe(0);
     expect(second.visitorCounts()).toEqual([1]);
@@ -349,13 +358,16 @@ describe("Conversation POST /assistant/chat", () => {
       return r;
     };
     await readEvents(await h.conversation.fetch(bare()));
-    expect((await h.conversation.fetch(bare())).status).toBe(429);
+    expect((await h.conversation.fetch(bare())).status).toBe(503);
   });
 
-  it("refuses every answer as resting without IP_HASH_KEY (fails closed)", async () => {
+  it("refuses every answer as an outage without IP_HASH_KEY (fails closed)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const h = await chatSetup({ vars: { IP_HASH_KEY: undefined } });
-    expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({ status: 503, body: { error: "resting" } });
+    expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
     expect(await h.spentToday()).toBe(0);
   });
 
@@ -687,8 +699,8 @@ describe("Conversation voice socket", () => {
     await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
     expect(h.visitorCounts()).toEqual([1, 15]); // one turn, and the socket's first block of seconds
     expect(await json(await h.conversation.fetch(chat(h.token, { message: "And before that?" })))).toEqual({
-      status: 429,
-      body: { error: "limit" },
+      status: 503,
+      body: { error: "resting", reason: "visitor" },
     });
     expect(h.data.get("turnsStarted")).toBe(1);
   });

@@ -1,3 +1,4 @@
+import type { RestingReason } from "../protocol/events";
 import type { Log } from "./conversation-state";
 import type { Env } from "./env";
 import { visitorKey } from "./visitor";
@@ -136,15 +137,16 @@ function wholeVar(env: Env, name: CountVar, fallback: number, log: Log): number 
   return 0;
 }
 
-export type TurnSpend = "ok" | "limit" | "resting";
+export type TurnSpend = "ok" | RestingReason;
 
 /**
  * Spends one model turn today (UTC): one of the visitor's (DAILY_TURNS_PER_IP, keyed by visitorKey)
  * and one of everyone's (DAILY_TURNS). The two run concurrently, so a turn waits one D1 round trip.
  * If either is refused or fails, the other is given back, so a refused turn costs nothing.
  *
- * "limit": only the visitor's day is used. "resting": everyone's is, or the database or IP_HASH_KEY
- * is missing: an unchecked turn could pass a ceiling, so it fails closed.
+ * "ceiling": everyone's day is used (also when the visitor's is too). "visitor": only the visitor's
+ * is. "outage": a spend failed, or IP_HASH_KEY is missing, and neither was refused: an unchecked
+ * turn could pass a ceiling, so it fails closed.
  */
 export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpend> {
   const day = utcDay(Date.now());
@@ -161,7 +163,8 @@ export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpe
     visitor === "ok" && quietly(key.then((k) => refundVisitor(env.DB, k, day)), log),
     everyone === "ok" && quietly(refund(env.DB, "turns", 1, day), log),
   ]);
-  return visitor === "refused" && everyone === "ok" ? "limit" : "resting";
+  if (everyone === "refused") return "ceiling";
+  return visitor === "refused" ? "visitor" : "outage";
 }
 
 async function keyFor(env: Env, day: string, ip: string, unit?: string): Promise<string> {
@@ -215,13 +218,29 @@ export function release(env: Env, unit: VoiceUnit, n: number, day: string, log: 
   return quietly(refund(env.DB, unit, n, day), log);
 }
 
-/** Whether today's (UTC) shared turns are used up. True when the database fails, as spendTurn fails closed. */
-export async function restingToday(env: Env, log: Log): Promise<boolean> {
+/**
+ * Why the assistant rests for this visitor right now (UTC day), or null when they can ask. Reads
+ * everyone's turns and the visitor's own concurrently. "ceiling" wins over "visitor", and both over
+ * "outage" (a read that failed, or IP_HASH_KEY missing), so a read that fails closed still says what it knows.
+ */
+export async function restingReason(env: Env, ip: string, log: Log): Promise<RestingReason | null> {
+  const day = utcDay(Date.now());
+  const [everyone, visitor] = await Promise.all([
+    attempt(async () => (await used(env.DB, "turns", day)) >= ceiling(env, "turns", log), log),
+    attempt(async () => (await usedVisitor(env.DB, await keyFor(env, day, ip), day)) >= turnsPerIp(env, log), log),
+  ]);
+  if (everyone === true) return "ceiling";
+  if (visitor === true) return "visitor";
+  return everyone === "failed" || visitor === "failed" ? "outage" : null;
+}
+
+/** The read's answer, or "failed" (logged) when it throws. */
+async function attempt(read: () => Promise<boolean>, log: Log): Promise<boolean | "failed"> {
   try {
-    return (await used(env.DB, "turns", utcDay(Date.now()))) >= ceiling(env, "turns", log);
+    return await read();
   } catch (err) {
     logFailure(log, err);
-    return true;
+    return "failed";
   }
 }
 

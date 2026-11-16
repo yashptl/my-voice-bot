@@ -59,7 +59,7 @@ function fakeFetch(respond: () => Response) {
 }
 
 describe("startSession", () => {
-  const session = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "text", expiresAt: 1_800_000, resting: false };
+  const session = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "text", expiresAt: 1_800_000, resting: null };
 
   it("posts the Turnstile token to <baseUrl>/session and returns the session", async () => {
     const fetch = fakeFetch(() => Response.json(session));

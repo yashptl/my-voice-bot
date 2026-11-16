@@ -107,7 +107,7 @@ describe("textTurn", () => {
     expect(record).toMatchObject({
       conversationId: "conv-1",
       mode: "text",
-      protocol: 1,
+      protocol: 2,
       model: "fake",
       promptHash: "prompthash01",
       knowledgeHash: bundle.hash,

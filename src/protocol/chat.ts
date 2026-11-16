@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AssistantMode } from "./events";
+import type { AssistantMode, RestingReason } from "./events";
 
 /** Longest visitor message, in UTF-16 code units. The brain enforces it again after sanitizing. */
 export const MAX_MESSAGE_CHARS = 4000;
@@ -16,18 +16,18 @@ export const SessionRequestSchema = z.object({
 });
 export type SessionRequest = z.infer<typeof SessionRequestSchema>;
 
-/** `POST /assistant/session` reply. `resting`: the day's shared ceiling is reached; show the static card. */
+/** `POST /assistant/session` reply. `resting`: why the assistant rests for this visitor now (show the static card), or null. */
 export interface SessionResponse {
   token: string;
   protocol: number;
   mode: AssistantMode;
   expiresAt: number;
-  resting: boolean;
+  resting: RestingReason | null;
 }
 
 /**
  * `POST /assistant/chat` body, sent with `Authorization: Bearer <token>`. The reply is a
- * `text/event-stream` of ServerEvents (see sse.ts); HTTP errors carry `{ error: ErrorCode | string }`.
+ * `text/event-stream` of ServerEvents (see sse.ts); HTTP errors carry `{ error: ErrorCode | string }`, and a 503 `resting` also carries `reason`.
  */
 export const ChatRequestSchema = z.object({
   message: z.string().trim().min(1).max(MAX_MESSAGE_CHARS),

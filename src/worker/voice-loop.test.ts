@@ -196,7 +196,7 @@ describe("VoiceLoop start", () => {
     await h.loop.start();
     expect(h.stt.keyterms).toEqual(bundle.keyterms);
     expect(h.out).toEqual([
-      { type: "ready", protocol: 1, mode: "voice", audio: VOICE_FORMAT },
+      { type: "ready", protocol: 2, mode: "voice", audio: VOICE_FORMAT },
       { type: "state", state: "listening" },
     ]);
   });
@@ -435,7 +435,7 @@ describe("VoiceLoop turn", () => {
       turnId,
       conversationId: "conv-1",
       mode: "voice",
-      protocol: 1,
+      protocol: 2,
       model: "fake",
       promptHash: await promptHash(buildStable(bundle)),
       knowledgeHash: bundle.hash,
@@ -965,7 +965,7 @@ describe("VoiceLoop onRecord (the turn log)", () => {
   });
 
   it("gets nothing for a turn the day's ceiling refused (no model call)", async () => {
-    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "resting" }).ledger });
+    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "ceiling" }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
@@ -1068,12 +1068,12 @@ describe("VoiceLoop parity with text", () => {
   });
 
   it("when the day's turns are spent: a resting error, no LLM call, and the conversation ends", async () => {
-    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "resting" }).ledger });
+    const h = setup({ ledger: fakeLedger({ spendTurn: async () => "ceiling" }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
     expect(h.signals).toEqual([]); // the LLM was never called
-    expect(of(h.out, "error")).toEqual([{ type: "error", code: "resting", message: expect.any(String) }]);
+    expect(of(h.out, "error")).toEqual([{ type: "error", code: "resting", reason: "ceiling", message: expect.any(String) }]);
     expect(of(h.out, "turn.end")).toEqual([]);
     expect(of(h.out, "sentence")).toEqual([]);
     expect(h.closes).toEqual([{ code: 1008, reason: "resting" }]);
@@ -1081,13 +1081,13 @@ describe("VoiceLoop parity with text", () => {
     expect(h.ttsCalls).toContain("cancel");
   });
 
-  it("treats a failing spend as refused (fails closed)", async () => {
+  it("treats a failing spend as an outage (fails closed)", async () => {
     const h = setup({ ledger: fakeLedger({ spendTurn: async () => Promise.reject(new Error("ledger down")) }).ledger });
     await h.loop.start();
     await ask(h, QUESTION);
     await vi.runAllTimersAsync();
     expect(h.signals).toEqual([]);
-    expect(of(h.out, "error").map((e) => e.code)).toEqual(["resting"]);
+    expect(of(h.out, "error").map((e) => [e.code, e.reason])).toEqual([["resting", "outage"]]);
     expect(h.closes).toEqual([{ code: 1008, reason: "resting" }]);
   });
 });
@@ -1143,22 +1143,19 @@ describe("VoiceLoop spends (turn order)", () => {
     expect(records(h.out)).toHaveLength(1);
   });
 
-  for (const [spent, code, reason] of [
-    ["limit", "limit", "visitor limit"],
-    ["resting", "resting", "resting"],
-  ] as const) {
-    it(`refused as ${spent}: a ${code} error, no model call, the turn undone and its speech given back`, async () => {
+  for (const spent of ["ceiling", "visitor", "outage"] as const) {
+    it(`refused as ${spent}: a resting error carrying that reason, no model call, the turn undone and its speech given back`, async () => {
       const l = fakeLedger({ spendTurn: async () => spent });
       const h = setup({ ledger: l.ledger });
       await h.loop.start();
       await ask(h, QUESTION);
       await vi.runAllTimersAsync();
       expect(h.signals).toEqual([]);
-      expect(of(h.out, "error")).toEqual([{ type: "error", code, message: expect.any(String) }]);
+      expect(of(h.out, "error")).toEqual([{ type: "error", code: "resting", reason: spent, message: expect.any(String) }]);
       expect(of(h.out, "turn.end")).toEqual([]);
       expect(h.state.turnsStarted).toBe(0);
       expect(l.released).toEqual([["tts_chars", 500, DAY]]);
-      expect(h.closes).toEqual([{ code: 1008, reason }]);
+      expect(h.closes).toEqual([{ code: 1008, reason: "resting" }]);
       expect(h.loop.history).toEqual([]);
       expect(h.logged).toEqual([]);
     });

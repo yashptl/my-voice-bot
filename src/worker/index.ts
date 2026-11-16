@@ -5,7 +5,7 @@ import { demoMode, missingConfig } from "./config";
 import { readJson } from "./conversation";
 import type { Env } from "./env";
 import { pruneGaps } from "./gap-log";
-import { pruneDays, pruneVisitors, restingToday, voiceRestingToday } from "./ledger";
+import { pruneDays, pruneVisitors, restingReason, voiceRestingToday } from "./ledger";
 import { buildProviders, NotConfiguredError } from "./providers";
 import { pruneTurns } from "./turn-log";
 import { verifyTurnstile } from "./turnstile";
@@ -28,12 +28,12 @@ const rateLimited = () => json({ error: "rate_limited" }, 429, { "retry-after": 
  * Mints a conversation and its token for a visitor who passed Turnstile. Rate limited per client
  * IP. Without a Turnstile secret, IP_HASH_KEY or (outside demo mode) MINIMAX_API_KEY it refuses
  * everyone rather than skipping a check or serving scripted replies.
- * `resting` tells the client the day's shared turns are already used (or the ledger cannot be read,
- * which fails closed), so it can show the static card. `mode` is "text" instead of "voice" while
+ * `resting` says why the assistant rests for this visitor (the day's shared turns used, this visitor's
+ * own used, or the ledger unreadable, which fails closed), or null; the client shows the static card. `mode` is "text" instead of "voice" while
  * voice rests for the day (its audio or speech ceiling, or this visitor's own audio seconds), so the client starts in text.
  */
 async function createSession(request: Request, env: Env): Promise<Response> {
-  if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
+  if (env.ASSISTANT_MODE === "off") return json({ error: "off" }, 503);
   const { success } = await env.RL_SESSION.limit({ key: clientIp(request) });
   if (!success) return rateLimited();
   const body = await readJson(request, SessionRequestSchema);
@@ -51,7 +51,7 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   const expiresAt = Date.now() + SESSION_TTL_MS;
   const [, resting, voiceResting] = await Promise.all([
     secretHash.then((hash) => env.CONVERSATION.get(env.CONVERSATION.idFromName(conversationId)).init(hash, expiresAt)),
-    restingToday(env, log),
+    restingReason(env, clientIp(request), log),
     env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, clientIp(request), log),
   ]);
   const mode = voiceResting ? "text" : env.ASSISTANT_MODE;
@@ -81,7 +81,7 @@ async function openVoice(request: Request, env: Env): Promise<Response> {
  * key, for the same reason as openVoice.
  */
 async function chat(request: Request, env: Env): Promise<Response> {
-  if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
+  if (env.ASSISTANT_MODE === "off") return json({ error: "off" }, 503);
   const parsed = parseToken(tokenFromAuthorization(request.headers.get("Authorization")) ?? "");
   if (!parsed) return json({ error: "auth" }, 401);
   const { success } = await env.RL_SESSION.limit({ key: `chat:${clientIp(request)}` });

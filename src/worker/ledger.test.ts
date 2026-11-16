@@ -10,7 +10,7 @@ import {
   releaseAudio,
   reserve,
   reserveAudio,
-  restingToday,
+  restingReason,
   spend,
   spendTurn,
   spendVisitor,
@@ -228,44 +228,47 @@ describe("spendTurn", () => {
     const e = envOf(db, { DAILY_TURNS_PER_IP: "2" });
     const results = [];
     for (const ip of [IP, IP, IP, "203.0.113.8"]) results.push(await spendTurn(e, ip, vi.fn()));
-    expect(results).toEqual(["ok", "ok", "limit", "ok"]);
+    expect(results).toEqual(["ok", "ok", "visitor", "ok"]);
   });
 
-  it("refused for the visitor while everyone's succeeds: limit, and everyone's turn is given back", async () => {
+  it("refused for the visitor while everyone's succeeds: visitor, and everyone's turn is given back", async () => {
     const db = sqliteD1();
     const e = envOf(db, { DAILY_TURNS_PER_IP: "1" });
     expect(await spendTurn(e, IP, vi.fn())).toBe("ok");
-    expect(await spendTurn(e, IP, vi.fn())).toBe("limit");
+    expect(await spendTurn(e, IP, vi.fn())).toBe("visitor");
     expect(await used(db, "turns", utcDay(Date.now()))).toBe(1);
     expect(visitorRows(db).map((r) => r.used)).toEqual([1]);
   });
 
-  it("refused for everyone while the visitor's succeeds: resting, and the visitor's turn is given back", async () => {
+  it("refused for everyone while the visitor's succeeds: ceiling, and the visitor's turn is given back", async () => {
     const db = sqliteD1();
     const e = envOf(db, { DAILY_TURNS: "1" });
     expect(await spendTurn(e, "203.0.113.8", vi.fn())).toBe("ok");
-    expect(await spendTurn(e, IP, vi.fn())).toBe("resting");
+    expect(await spendTurn(e, IP, vi.fn())).toBe("ceiling");
     expect(await used(db, "turns", utcDay(Date.now()))).toBe(1);
     expect(visitorRows(db).map((r) => r.used).sort()).toEqual([0, 1]);
   });
 
-  it("is resting when both are refused", async () => {
-    const e = envOf(sqliteD1(), { DAILY_TURNS: "0", DAILY_TURNS_PER_IP: "0" });
-    expect(await spendTurn(e, IP, vi.fn())).toBe("resting");
+  it("is the ceiling when both are refused, and a refused turn leaves both counts unchanged", async () => {
+    const db = sqliteD1();
+    const e = envOf(db, { DAILY_TURNS: "0", DAILY_TURNS_PER_IP: "0" });
+    expect(await spendTurn(e, IP, vi.fn())).toBe("ceiling");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(0);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([]);
   });
 
-  it("fails closed as resting without IP_HASH_KEY, giving everyone's turn back, and logs why", async () => {
+  it("fails closed as an outage without IP_HASH_KEY, giving everyone's turn back, and logs why", async () => {
     const db = sqliteD1();
     const log = vi.fn();
-    expect(await spendTurn(envOf(db, { IP_HASH_KEY: " " }), IP, log)).toBe("resting");
+    expect(await spendTurn(envOf(db, { IP_HASH_KEY: " " }), IP, log)).toBe("outage");
     expect(await used(db, "turns", utcDay(Date.now()))).toBe(0);
     expect(visitorRows(db)).toEqual([]);
     expect(log).toHaveBeenCalledWith("error", "ledger failed: IP_HASH_KEY is not set");
   });
 
-  it("fails closed as resting when the database fails, and logs why", async () => {
+  it("fails closed as an outage when the database fails, and logs why", async () => {
     const log = vi.fn();
-    expect(await spendTurn(envOf(brokenDb()), IP, log)).toBe("resting");
+    expect(await spendTurn(envOf(brokenDb()), IP, log)).toBe("outage");
     expect(log).toHaveBeenCalledWith("error", "ledger failed: D1 unavailable");
   });
 
@@ -315,7 +318,7 @@ describe("spendTurn", () => {
         };
       },
     } as unknown as D1Database;
-    expect(await spendTurn(envOf(crossing, { DAILY_TURNS_PER_IP: "0" }), IP, vi.fn())).toBe("limit");
+    expect(await spendTurn(envOf(crossing, { DAILY_TURNS_PER_IP: "0" }), IP, vi.fn())).toBe("visitor");
     expect(utcDay(Date.now())).toBe("2026-11-09");
     expect(rows(db)).toEqual([
       { day: DAY, unit: "turns", used: 0 },
@@ -360,30 +363,47 @@ describe("reserve and release", () => {
   });
 });
 
-describe("restingToday", () => {
-  it("rests once today's (UTC) turns are used, so the ceiling resets at UTC midnight", async () => {
+describe("restingReason", () => {
+  it("is null with room on both, and rests on the shared ceiling until UTC midnight resets it", async () => {
     vi.useFakeTimers({ now: Date.UTC(2026, 10, 8, 23, 59, 59) });
     const e = envOf(sqliteD1(), { DAILY_TURNS: "1" });
     const log = vi.fn();
-    expect(await restingToday(e, log)).toBe(false);
-    expect(await spendTurn(e, IP, log)).toBe("ok");
-    expect(await spendTurn(e, IP, log)).toBe("resting");
-    expect(await restingToday(e, log)).toBe(true);
+    expect(await restingReason(e, IP, log)).toBeNull();
+    expect(await spendTurn(e, "203.0.113.8", log)).toBe("ok");
+    expect(await spendTurn(e, IP, log)).toBe("ceiling");
+    expect(await restingReason(e, IP, log)).toBe("ceiling");
     vi.setSystemTime(Date.UTC(2026, 10, 9, 0, 0, 0));
-    expect(await restingToday(e, log)).toBe(false);
+    expect(await restingReason(e, IP, log)).toBeNull();
     expect(await spendTurn(e, IP, log)).toBe("ok");
     expect(log).not.toHaveBeenCalled();
   });
 
-  it("rests when DAILY_TURNS is 0, or is not a whole number", async () => {
-    expect(await restingToday(envOf(sqliteD1(), { DAILY_TURNS: "0" }), vi.fn())).toBe(true);
-    expect(await restingToday(envOf(sqliteD1(), { DAILY_TURNS: "40O" }), vi.fn())).toBe(true);
+  it("is visitor when the visitor's used turns equal DAILY_TURNS_PER_IP, while others still have room", async () => {
+    const e = envOf(sqliteD1(), { DAILY_TURNS_PER_IP: "1" });
+    expect(await restingReason(e, IP, vi.fn())).toBeNull();
+    expect(await spendTurn(e, IP, vi.fn())).toBe("ok");
+    expect(await restingReason(e, IP, vi.fn())).toBe("visitor");
+    expect(await restingReason(e, "203.0.113.8", vi.fn())).toBeNull();
   });
 
-  it("fails closed as resting when the database fails, and logs why", async () => {
+  it("is ceiling when both are used", async () => {
+    const e = envOf(sqliteD1(), { DAILY_TURNS: "0", DAILY_TURNS_PER_IP: "0" });
+    expect(await restingReason(e, IP, vi.fn())).toBe("ceiling");
+  });
+
+  it("is ceiling when DAILY_TURNS is 0 or not a whole number (paused)", async () => {
+    expect(await restingReason(envOf(sqliteD1(), { DAILY_TURNS: "0" }), IP, vi.fn())).toBe("ceiling");
+    expect(await restingReason(envOf(sqliteD1(), { DAILY_TURNS: "40O" }), IP, vi.fn())).toBe("ceiling");
+  });
+
+  it("is outage when the database fails, and logs why", async () => {
     const log = vi.fn();
-    expect(await restingToday(envOf(brokenDb()), log)).toBe(true);
-    expect(log.mock.calls).toEqual([["error", "ledger failed: D1 unavailable"]]);
+    expect(await restingReason(envOf(brokenDb()), IP, log)).toBe("outage");
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: D1 unavailable");
+  });
+
+  it("is outage without IP_HASH_KEY", async () => {
+    expect(await restingReason(envOf(sqliteD1(), { IP_HASH_KEY: " " }), IP, vi.fn())).toBe("outage");
   });
 });
 
