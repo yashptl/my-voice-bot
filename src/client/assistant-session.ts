@@ -1,8 +1,9 @@
 import type { SessionResponse } from "../protocol/chat";
-import type { AssistantMode, ErrorCode, ServerEvent, Source } from "../protocol/events";
+import type { AssistantMode, ErrorCode, RestingReason, ServerEvent, Source } from "../protocol/events";
 import type { DataLine } from "../protocol/data-line";
 import type { TurnRecord } from "../protocol/turn-record";
-import { AssistantHttpError, ask as chatAsk, startSession, type HttpErrorCode } from "./text-chat";
+import { PROTOCOL_VERSION } from "../protocol/version";
+import { AssistantHttpError, ask as chatAsk, OutdatedError, startSession, type HttpErrorCode } from "./text-chat";
 import { DEFAULT_BASE_URL } from "./urls";
 import { VoiceSession, type VoiceSessionEventOf } from "./voice-session";
 
@@ -23,7 +24,15 @@ export interface AssistantSessionOptions {
   now?: () => number;
 }
 
-export type AssistantStatus = "idle" | "starting" | "ready" | "resting" | "off" | "error";
+/**
+ * "resting": the assistant refuses for now (`resting` says why). "off": switched off. "outdated": the
+ * server and this client speak different protocol versions, so the page must reload; only reset()
+ * leaves it. "error": the assistant could not be reached, however that happened.
+ */
+export type AssistantStatus = "idle" | "starting" | "ready" | "resting" | "off" | "outdated" | "error";
+
+/** Why an answer is missing: what the server said, or "connection" when it never finished saying it. */
+export type MessageError = HttpErrorCode | ErrorCode | "connection";
 
 export interface ChatMessage {
   id: string;
@@ -43,10 +52,11 @@ export interface ChatMessage {
   /** For "Under the hood". */
   record: TurnRecord | null;
   /**
-   * Why the answer is missing or incomplete. "unknown": the connection failed or dropped (what the
-   * server refused with is its own code); the sentences before it were still shown.
+   * Why the answer is missing or incomplete. "connection": the connection failed or dropped (what
+   * the server refused with is its own code; "unknown" is an HTTP refusal this client does not
+   * know); the sentences before it were still shown.
    */
-  error: HttpErrorCode | ErrorCode | null;
+  error: MessageError | null;
   stopped: boolean;
 }
 
@@ -54,6 +64,8 @@ export type VoiceState = "off" | "connecting" | "listening" | "thinking" | "spea
 
 export interface AssistantSnapshot {
   status: AssistantStatus;
+  /** Why the assistant is resting; non-null exactly when `status` is "resting". */
+  resting: RestingReason | null;
   mode: AssistantMode;
   /** An answer is streaming, in text or voice. */
   busy: boolean;
@@ -77,6 +89,7 @@ const NO_MIC = "The microphone isn't available. You can keep typing.";
 
 const INITIAL: AssistantSnapshot = {
   status: "idle",
+  resting: null,
   mode: "off",
   busy: false,
   limitReached: false,
@@ -127,10 +140,15 @@ export class AssistantSession {
     return () => void this.listeners.delete(listener);
   };
 
-  /** Mints the session, if there is not one. Never rejects: a failure is status "error" and a notice. */
+  /**
+   * Mints the session, if there is not one; while resting or off it asks again, to see whether the
+   * assistant is back. Never rejects: a failure is status "error" and a notice.
+   */
   async start(): Promise<void> {
+    const { status } = this.snap;
+    if (status === "outdated") return;
     try {
-      await this.ensureSession();
+      await this.ensureSession(status === "resting" || status === "off");
     } catch {
       // ensureSession reported it.
     }
@@ -144,7 +162,7 @@ export class AssistantSession {
   async ask(text: string): Promise<void> {
     const message = text.trim();
     const { status, busy, limitReached } = this.snap;
-    if (!message || this.disposed || busy || limitReached || status === "off" || status === "resting") return;
+    if (!message || this.disposed || busy || limitReached || status === "off" || status === "resting" || status === "outdated") return;
 
     const controller = new AbortController();
     this.controller = controller;
@@ -157,7 +175,16 @@ export class AssistantSession {
 
     try {
       for (let attempt = 0; ; attempt++) {
-        const session = await this.ensureSession(attempt > 0);
+        let session: SessionResponse;
+        try {
+          session = await this.ensureSession(attempt > 0);
+        } catch (err) {
+          // A renewal that finds the assistant off or outdated has set the status; the question was never asked.
+          if (this.generation === generation && (err instanceof OutdatedError || (err instanceof AssistantHttpError && err.code === "off"))) {
+            return withdraw();
+          }
+          throw err;
+        }
         if (this.generation !== generation) return;
         if (this.snap.status === "resting" || this.snap.status === "off") return withdraw();
         try {
@@ -181,14 +208,14 @@ export class AssistantSession {
         }
       }
       // The stream ended without turn.end or an error: the connection was cut.
-      this.patch(assistant.id, (m) => (m.pending ? { ...m, pending: false, error: m.error ?? "unknown" } : m));
+      this.patch(assistant.id, (m) => (m.pending ? { ...m, pending: false, error: m.error ?? "connection" } : m));
     } catch (err) {
       if (this.generation !== generation) return;
       if (controller.signal.aborted) {
         this.patch(assistant.id, (m) => ({ ...m, pending: false, stopped: true }));
       } else {
-        const code = err instanceof AssistantHttpError ? err.code : "unknown";
-        this.fail(assistant.id, code);
+        if (err instanceof AssistantHttpError) this.fail(assistant.id, err.code, err.reason);
+        else this.fail(assistant.id, "connection");
       }
     } finally {
       if (this.generation === generation) {
@@ -208,12 +235,17 @@ export class AssistantSession {
    * and the microphone prompt need a user gesture). Does nothing unless the session's mode is voice.
    */
   async startVoice(): Promise<void> {
-    if (this.disposed || this.snap.mode !== "voice" || this.voice) return;
+    if (this.disposed || this.snap.mode !== "voice" || this.snap.status === "outdated" || this.voice) return;
     const voice = new VoiceSession({ createWebSocket: this.o.createWebSocket, workletUrl: this.o.workletUrl });
     this.voice = voice;
     this.set({ voice: { state: "connecting", transcript: "" }, notice: null });
     this.voiceOff = [
       voice.on("connection", (e) => this.onVoiceConnection(voice, e)),
+      voice.on("ready", (e) => {
+        if (e.protocol === PROTOCOL_VERSION) return;
+        this.set({ status: "outdated", resting: null }); // VoiceSession closes the socket itself
+        this.endVoice(null);
+      }),
       voice.on("state", (e) => {
         if (this.snap.voice.state === "connecting") return;
         this.setVoice({ state: e.state === "thinking" || e.state === "speaking" ? e.state : "listening" });
@@ -302,15 +334,24 @@ export class AssistantSession {
       const renewed = this.conversationStarted;
       this.conversationStarted = false;
       this.set({
-        status: session.mode === "off" ? "off" : session.resting ? "resting" : "ready",
+        ...(session.mode === "off"
+          ? { status: "off" as const, resting: null }
+          : session.resting
+            ? { status: "resting" as const, resting: session.resting }
+            : { status: "ready" as const, resting: null }),
         mode: this.voiceRested ? "text" : session.mode,
         ...(renewed && { notice: RENEWED }),
       });
       return session;
     } catch (err) {
-      if (this.generation === generation && !hadSession) {
-        const reason = err instanceof Error ? err.message : String(err);
-        this.set({ status: "error", notice: `Couldn't reach the assistant (${reason}).` });
+      if (this.generation === generation) {
+        if (err instanceof OutdatedError) this.set({ status: "outdated", resting: null });
+        else if (err instanceof AssistantHttpError && err.code === "off") this.set({ status: "off", resting: null, mode: "off" });
+        else if (err instanceof AssistantHttpError && err.code === "resting") this.set({ status: "resting", resting: err.reason ?? "outage" });
+        else if (!hadSession) {
+          const reason = err instanceof Error ? err.message : String(err);
+          this.set({ status: "error", notice: `Couldn't reach the assistant (${reason}).` });
+        }
       }
       throw err;
     }
@@ -350,7 +391,7 @@ export class AssistantSession {
         this.patch(id, (m) => ({ ...m, record: e.record, stopped: true }));
         break;
       case "error":
-        this.fail(id, e.code);
+        this.fail(id, e.code, e.reason);
         break;
     }
   }
@@ -366,10 +407,10 @@ export class AssistantSession {
     }
     const ends = e.code === "limit" || e.code === "resting" || e.code === "auth" || e.code === "internal";
     if (!ends) return this.set({ notice: e.message });
-    if (this.voiceCurrent !== null) return this.fail(this.voiceCurrent, e.code);
+    if (this.voiceCurrent !== null) return this.fail(this.voiceCurrent, e.code, e.reason);
     // Outside a turn: the session state still changes.
     if (e.code === "limit") this.set({ limitReached: true, notice: LIMIT_REACHED });
-    else if (e.code === "resting") this.set({ status: "resting" });
+    else if (e.code === "resting") this.set({ status: "resting", resting: e.reason ?? "outage" });
     else this.set({ notice: e.message });
   }
 
@@ -390,9 +431,10 @@ export class AssistantSession {
   }
 
   /** A text or voice error: on the message, plus what it means for the whole conversation. */
-  private fail(id: string, code: HttpErrorCode | ErrorCode): void {
+  private fail(id: string, code: MessageError, reason?: RestingReason | null): void {
     if (code === "limit") this.set({ limitReached: true });
-    if (code === "resting") this.set({ status: "resting" });
+    if (code === "resting") this.set({ status: "resting", resting: reason ?? "outage" });
+    if (code === "off") this.set({ status: "off", resting: null, mode: "off" });
     this.patch(id, (m) => (m.error ? m : { ...m, error: code, pending: false }));
   }
 
@@ -417,7 +459,7 @@ export class AssistantSession {
     if (current) {
       const dropped = notice !== null && notice !== VOICE_RESTING;
       this.patch(current, (m) =>
-        m.pending ? (dropped ? { ...m, pending: false, error: m.error ?? "unknown" } : { ...m, pending: false, stopped: true }) : m,
+        m.pending ? (dropped ? { ...m, pending: false, error: m.error ?? "connection" } : { ...m, pending: false, stopped: true }) : m,
       );
     }
     this.set({

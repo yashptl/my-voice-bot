@@ -58,7 +58,7 @@ function stream(events: ServerEvent[], o: { hang?: boolean } = {}) {
   return { response, state };
 }
 
-const refusal = (status: number, error: string) => () => Response.json({ error }, { status });
+const refusal = (status: number, error: string, extra: object = {}) => () => Response.json({ error, ...extra }, { status });
 
 let t: number;
 let tokens: number;
@@ -66,12 +66,14 @@ let sessionTemplate: Partial<SessionResponse>;
 let chats: (() => Response)[];
 let chatCalls: { token: string; message: string }[];
 let sessionCalls: number;
+let sessionOff: boolean;
 let sockets: FakeWebSocket[];
 
 const fakeFetch = vi.fn<typeof fetch>(async (input, init) => {
   const url = String(input);
   if (url.endsWith("/session")) {
     sessionCalls++;
+    if (sessionOff) return Response.json({ error: "off" }, { status: 503 });
     return Response.json({
       token: `c1.s${++tokens}`,
       protocol: PROTOCOL_VERSION,
@@ -115,6 +117,7 @@ beforeEach(() => {
   chats = [];
   chatCalls = [];
   sessionCalls = 0;
+  sessionOff = false;
   sockets = [];
   fakeFetch.mockClear();
   vi.stubGlobal("AudioContext", FakeAudioContext);
@@ -156,7 +159,96 @@ describe("start", () => {
     sessionTemplate = { resting: "ceiling" };
     const resting = make();
     await resting.start();
-    expect(resting.snapshot.status).toBe("resting");
+    expect(resting.snapshot).toMatchObject({ status: "resting", resting: "ceiling" });
+  });
+
+  it("carries the resting reason only while resting", async () => {
+    const s = make();
+    await s.start();
+    expect(s.snapshot).toMatchObject({ status: "ready", resting: null });
+    sessionTemplate = { resting: "visitor" };
+    const rested = make();
+    await rested.start();
+    expect(rested.snapshot).toMatchObject({ status: "resting", resting: "visitor" });
+    rested.reset();
+    expect(rested.snapshot).toMatchObject({ status: "idle", resting: null });
+  });
+
+  it("asks /session again when resting or off, and takes the new state", async () => {
+    sessionTemplate = { resting: "outage" };
+    const s = make();
+    await s.start();
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "outage" });
+    await s.start();
+    expect(sessionCalls).toBe(2);
+    sessionTemplate = { resting: null };
+    await s.start();
+    expect(sessionCalls).toBe(3);
+    expect(s.snapshot).toMatchObject({ status: "ready", resting: null });
+    await s.start(); // ready: the cached session
+    expect(sessionCalls).toBe(3);
+
+    sessionTemplate = { mode: "off" };
+    const off = make();
+    await off.start();
+    sessionTemplate = {};
+    await off.start();
+    expect(sessionCalls).toBe(5);
+    expect(off.snapshot.status).toBe("ready");
+  });
+
+  it("keeps the messages when start() finds the assistant ready again, and says the conversation was renewed", async () => {
+    chats.push(stream(SENTENCES).response);
+    const s = make();
+    await s.ask("Where does Yash work now?");
+    chats.push(refusal(503, "resting"));
+    await s.ask("again");
+    expect(s.snapshot.status).toBe("resting");
+    const before = s.snapshot.messages;
+    await s.start();
+    expect(s.snapshot).toMatchObject({ status: "ready", resting: null });
+    expect(s.snapshot.messages).toBe(before);
+    expect(s.snapshot.notice).toMatch(/renewed/i);
+  });
+
+  it("reports off for a 503 off on the first session, not error", async () => {
+    sessionOff = true;
+    const s = make();
+    await s.start();
+    expect(s.snapshot).toMatchObject({ status: "off", resting: null });
+  });
+
+  it("reports off when a renewal discovers it, and withdraws the question", async () => {
+    const s = make();
+    await s.start();
+    t += 590_000;
+    sessionOff = true;
+    await s.ask("hi");
+    expect(s.snapshot).toMatchObject({ status: "off", mode: "off", messages: [] });
+    expect(chatCalls).toEqual([]);
+  });
+
+  it("reports outdated for another protocol, from a first session or a renewal, until reset", async () => {
+    sessionTemplate = { protocol: PROTOCOL_VERSION + 1 };
+    const first = make();
+    await first.start();
+    expect(first.snapshot.status).toBe("outdated");
+    await first.start();
+    expect(sessionCalls).toBe(1);
+    await first.ask("hi");
+    expect(first.snapshot.messages).toEqual([]);
+    first.reset();
+    expect(first.snapshot.status).toBe("idle");
+
+    sessionTemplate = {};
+    const s = make();
+    await s.start();
+    t += 590_000;
+    sessionTemplate = { protocol: PROTOCOL_VERSION + 1 };
+    await s.ask("hi");
+    expect(s.snapshot.status).toBe("outdated");
+    expect(s.snapshot.messages).toEqual([]);
+    expect(chatCalls).toEqual([]);
   });
 
   it("reports an error with a notice when the session cannot be minted, and can be retried", async () => {
@@ -258,26 +350,27 @@ describe("ask", () => {
     await a.ask("hi");
     expect(a.snapshot.limitReached).toBe(true);
 
-    chats.push(stream([{ type: "error", code: "resting", message: "" }]).response);
+    chats.push(stream([{ type: "error", code: "resting", message: "", reason: "visitor" }]).response);
     const b = make();
     await b.ask("hi");
-    expect(b.snapshot.status).toBe("resting");
+    expect(b.snapshot).toMatchObject({ status: "resting", resting: "visitor" });
+    expect(b.snapshot.messages[1]?.error).toBe("resting");
   });
 
-  it("marks a stream that ends early as cut off (unknown)", async () => {
+  it("marks a stream that ends early as a dropped connection", async () => {
     chats.push(stream([{ type: "sentence", turnId: "t1", id: 0, text: "Half an" }]).response);
     const s = make();
     await s.ask("hi");
-    expect(s.snapshot.messages[1]).toMatchObject({ text: "Half an", pending: false, error: "unknown" });
+    expect(s.snapshot.messages[1]).toMatchObject({ text: "Half an", pending: false, error: "connection" });
   });
 
-  it("marks a failed connection as unknown", async () => {
+  it("marks a failed connection as connection", async () => {
     chats.push(() => {
       throw new TypeError("network down");
     });
     const s = make();
     await s.ask("hi");
-    expect(s.snapshot.messages[1]).toMatchObject({ pending: false, error: "unknown" });
+    expect(s.snapshot.messages[1]).toMatchObject({ pending: false, error: "connection" });
     expect(s.snapshot.busy).toBe(false);
   });
 
@@ -305,12 +398,19 @@ describe("ask", () => {
     expect(chatCalls).toHaveLength(1);
   });
 
-  it("sets status resting on HTTP resting", async () => {
+  it("sets status resting, with its reason, on HTTP resting", async () => {
+    chats.push(refusal(503, "resting", { reason: "visitor" }));
+    const s = make();
+    await s.ask("hi");
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "visitor" });
+    expect(s.snapshot.messages[1]?.error).toBe("resting");
+  });
+
+  it("takes resting without a reason as an outage", async () => {
     chats.push(refusal(503, "resting"));
     const s = make();
     await s.ask("hi");
-    expect(s.snapshot.status).toBe("resting");
-    expect(s.snapshot.messages[1]?.error).toBe("resting");
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "outage" });
   });
 
   it("withdraws the question when the new session turns out to be resting", async () => {
@@ -680,8 +780,25 @@ describe("voice", () => {
 
   it("resting outside a turn sets status resting", async () => {
     const { s, ws } = await voiceReady();
-    ws.receive({ type: "error", code: "resting", message: "" });
-    expect(s.snapshot.status).toBe("resting");
+    ws.receive({ type: "error", code: "resting", message: "", reason: "ceiling" });
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "ceiling" });
+  });
+
+  it("resting in a voice turn puts the reason on the status and the code on the answer", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "error", code: "resting", message: "", reason: "visitor" });
+    expect(s.snapshot).toMatchObject({ status: "resting", resting: "visitor" });
+    expect(s.snapshot.messages[1]).toMatchObject({ error: "resting", pending: false });
+  });
+
+  it("a ready event with another protocol shuts voice down and the session is outdated", async () => {
+    const { s, ws } = await voiceReady();
+    ws.receive({ ...READY, protocol: PROTOCOL_VERSION + 1 });
+    expect(ws.closedWith?.code).toBe(1000);
+    expect(s.snapshot).toMatchObject({ status: "outdated", voice: { state: "off" } });
+    await s.startVoice();
+    expect(sockets).toHaveLength(1);
   });
 
   it("a limit in a turn ends the answer and the conversation", async () => {
@@ -709,7 +826,7 @@ describe("voice", () => {
     ws.serverClose(1006);
     expect(s.snapshot.voice.state).toBe("off");
     expect(s.snapshot.notice).toMatch(/voice/i);
-    expect(s.snapshot.messages[1]).toMatchObject({ pending: false, error: "unknown" });
+    expect(s.snapshot.messages[1]).toMatchObject({ pending: false, error: "connection" });
     expect(s.snapshot.mode).toBe("voice");
   });
 

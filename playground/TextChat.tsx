@@ -32,7 +32,7 @@ const COUNTER_FROM = MAX_MESSAGE_CHARS - 400;
 
 /** What a failed answer says. Codes not listed (provider, internal, protocol) get the Messages card. */
 const PROBLEMS: Partial<Record<NonNullable<ChatMessage["error"]>, string>> = {
-  unknown: "The connection dropped before the answer finished. Please ask again.",
+  connection: "The connection dropped before the answer finished. Please ask again.",
   busy: "Still finishing the last answer. Send again in a moment.",
   rate_limited: "That's a lot of questions in a minute. Wait a moment, then send again.",
   bad_request: "That message couldn't be sent. Try a shorter question.",
@@ -55,7 +55,7 @@ function newSession() {
  */
 export function TextChat() {
   const [session, setSession] = useState(newSession);
-  const { status, busy, limitReached, notice: sessionNotice, messages } = useAssistant(session);
+  const { status, resting, busy, limitReached, notice: sessionNotice, messages } = useAssistant(session);
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** The notice card's title, which takes focus when the card replaces the focused composer. */
@@ -81,8 +81,9 @@ export function TextChat() {
     if (messages.length > 0 && followRef.current) window.scrollTo({ top: document.documentElement.scrollHeight });
   }, [messages]);
 
-  /** States that replace the composer: this conversation's questions are used up, or the day's. */
-  const card = status === "resting" ? "resting" : limitReached ? "limit" : null;
+  /** States that replace the composer: the assistant is away or out of date, or this conversation's questions are used up. */
+  const card =
+    status === "resting" || status === "off" ? "resting" : status === "outdated" ? "outdated" : limitReached ? "limit" : null;
 
   // A card unmounts the composer; if it had focus, focus fell to <body> and the next Tab would skip
   // the card. Focusing the card's title keeps keyboard visitors in place and has it read out.
@@ -147,7 +148,8 @@ export function TextChat() {
         </ul>
       )}
 
-      {card === "resting" && <RestingCard titleRef={noticeRef} />}
+      {card === "resting" && <RestingCard titleRef={noticeRef} back={resting === "outage" || status === "off" ? "soon" : "tomorrow"} />}
+      {card === "outdated" && <OutdatedCard titleRef={noticeRef} />}
       {card === "limit" && <LimitCard titleRef={noticeRef} onStartOver={startOver} />}
 
       {!card && (
@@ -228,6 +230,7 @@ function TurnView({ question, answer }: { question: ChatMessage; answer: ChatMes
           )}
           {answer.stopped && <p className="note">{answer.text ? "Stopped." : "Stopped before the answer started."}</p>}
           {problem && PROBLEMS[problem] && <p className="note problem">{PROBLEMS[problem]}</p>}
+          {problem && <p className="note code">{problem}</p>}
           {sources.length > 0 && (
             <ul className="sources" aria-label="Sources">
               {sources.map((s) => (
@@ -263,13 +266,13 @@ function MessagesCard({ text, problem = false }: { text: string; problem?: boole
   );
 }
 
-function RestingCard({ titleRef }: { titleRef: Ref<HTMLParagraphElement> }) {
+function RestingCard({ titleRef, back }: { titleRef: Ref<HTMLParagraphElement>; back: "soon" | "tomorrow" }) {
   return (
     <div className="card" role="status">
       <p className="card-title" tabIndex={-1} ref={titleRef}>
-        The assistant is resting for today.
+        So many people talked to the assistant today that it's tired out.
       </p>
-      <p>Yash is a full-stack and AI engineer, open to new roles.</p>
+      <p>It'll be back {back}.</p>
       <div className="actions">
         <a className="button" href={RESUME_URL} target="_blank" rel="noreferrer">
           Open the resume
@@ -277,6 +280,21 @@ function RestingCard({ titleRef }: { titleRef: Ref<HTMLParagraphElement> }) {
         <a className="button primary" href={MESSAGES_URL} target="_blank" rel="noreferrer">
           Message Yash
         </a>
+      </div>
+    </div>
+  );
+}
+
+function OutdatedCard({ titleRef }: { titleRef: Ref<HTMLParagraphElement> }) {
+  return (
+    <div className="card" role="status">
+      <p className="card-title" tabIndex={-1} ref={titleRef}>
+        The assistant was updated. Reload the page to keep asking.
+      </p>
+      <div className="actions">
+        <button type="button" className="button primary" onClick={() => window.location.reload()}>
+          Reload
+        </button>
       </div>
     </div>
   );
