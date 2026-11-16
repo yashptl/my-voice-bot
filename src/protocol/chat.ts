@@ -1,11 +1,6 @@
 import { z } from "zod";
 import type { AssistantMode, RestingReason } from "./events";
-
-/** Longest visitor message, in UTF-16 code units. The brain enforces it again after sanitizing. */
-export const MAX_MESSAGE_CHARS = 4000;
-
-/** Request bodies above this are refused before parsing. */
-export const MAX_BODY_BYTES = 16_384;
+import { MAX_MESSAGE_CHARS } from "./limits";
 
 /**
  * `POST /assistant/session` body. `turnstile` is the Turnstile widget's token (single use, valid

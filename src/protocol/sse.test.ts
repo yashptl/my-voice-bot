@@ -60,7 +60,8 @@ describe("chat contracts", () => {
   it("trims messages and refuses empty or oversized ones", () => {
     expect(ChatRequestSchema.parse({ message: "  hi  " })).toEqual({ message: "hi" });
     expect(ChatRequestSchema.safeParse({ message: "   " }).success).toBe(false);
-    expect(ChatRequestSchema.safeParse({ message: "x".repeat(4001) }).success).toBe(false);
+    expect(ChatRequestSchema.safeParse({ message: "x".repeat(12_000) }).success).toBe(true);
+    expect(ChatRequestSchema.safeParse({ message: "x".repeat(12_001) }).success).toBe(false);
   });
 
   it("requires a Turnstile token for a session", () => {

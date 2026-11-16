@@ -22,6 +22,7 @@ import {
   voiceRestingToday,
   voiceSecondsPerIp,
 } from "./ledger";
+import { visitorKey } from "./visitor";
 
 const DAY = "2026-11-08";
 const IP = "203.0.113.7";
@@ -224,6 +225,40 @@ describe("admitTurn", () => {
     expect(await admitTurn(envOf(db), IP, vi.fn())).toBe("ok");
     expect(await used(db, "turns", utcDay(Date.now()))).toBe(1);
     expect(visitorRows(db).map((r) => r.used)).toEqual([1]);
+  });
+
+  it("with turns: 3, spends 3 of the visitor's and 3 of everyone's", async () => {
+    const db = sqliteD1();
+    expect(await admitTurn(envOf(db), IP, vi.fn(), { turns: 3 })).toBe("ok");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(3);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([3]);
+  });
+
+  it("with turns: 3 and 58 of the visitor's 60 used, says visitor and leaves both counts as they were", async () => {
+    const db = sqliteD1();
+    const day = utcDay(Date.now());
+    await spend(db, "turns", 58, 400, day);
+    await spendVisitor(db, await visitorKey("test-key", day, IP), 60, day, 58);
+    expect(await admitTurn(envOf(db), IP, vi.fn(), { turns: 3 })).toBe("visitor");
+    expect(await used(db, "turns", day)).toBe(58);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([58]);
+  });
+
+  it("with turns: 3 and 398 of the shared 400 used, says ceiling and leaves both counts as they were", async () => {
+    const db = sqliteD1();
+    const day = utcDay(Date.now());
+    await spend(db, "turns", 398, 400, day);
+    expect(await admitTurn(envOf(db), IP, vi.fn(), { turns: 3 })).toBe("ceiling");
+    expect(await used(db, "turns", day)).toBe(398);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([0]);
+  });
+
+  it("with turns: 3 and the flag set, gives all 3 back from both counts", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    expect(await admitTurn(envOf(db), IP, vi.fn(), { turns: 3 })).toBe("outage");
+    expect(await used(db, "turns", utcDay(Date.now()))).toBe(0);
+    expect(visitorRows(db).map((r) => r.used)).toEqual([0]);
   });
 
   it("with the flag set, says outage and gives the spend back, leaving both counts as they were", async () => {

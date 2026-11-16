@@ -10,6 +10,7 @@ import type { TtsPort, TtsSession } from "../ports/tts";
 import { encodeAudioFrame, MIC_FRAME_BYTES } from "../protocol/audio";
 import type { DataLine, DataLineStatus } from "../protocol/data-line";
 import type { ClientMessage, ErrorCode, RestingReason, ServerEvent } from "../protocol/events";
+import { MAX_TRANSCRIPT_CHARS } from "../protocol/limits";
 import type { GateSummary, GroundingResult, Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import { MIC_BYTES_PER_SECOND, type ConversationState, type Log } from "./conversation-state";
@@ -534,7 +535,7 @@ export class VoiceLoop {
         const eagerAt = this.eager?.turnIndex === e.turnIndex ? this.eager.at : null;
         this.eager = null;
         // Stored in history and sent to the LLM again on later turns, so cleaned once here.
-        const question = sanitizeInput(e.transcript).trim();
+        const question = sanitizeInput(e.transcript, MAX_TRANSCRIPT_CHARS).trim();
         if (question) this.startTurn(question, eagerAt);
         return;
       }

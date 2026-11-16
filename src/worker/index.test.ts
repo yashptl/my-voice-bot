@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sqliteD1 } from "../../tests/sqlite-d1";
-import { MAX_BODY_BYTES } from "../protocol/chat";
+import { MAX_BODY_BYTES } from "../protocol/limits";
 import type { ServerEvent } from "../protocol/events";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";

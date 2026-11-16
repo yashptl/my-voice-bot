@@ -192,6 +192,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("VoiceLoop transcripts", () => {
+  it("cuts a 5,000-character final transcript to 4,000 before the model sees it, and counts one turn", async () => {
+    const h = setup();
+    await h.loop.start();
+    await ask(h, "a".repeat(5000));
+    await until(() => h.loop.history.length === 2);
+    expect(h.loop.history[0]?.text).toBe("a".repeat(4000));
+    expect(h.state.turnsStarted).toBe(1);
+  });
+});
+
 describe("VoiceLoop start", () => {
   it("opens STT with the bundle's keyterms, then sends ready and listening", async () => {
     const h = setup();

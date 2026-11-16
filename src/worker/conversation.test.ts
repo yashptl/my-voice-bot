@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { sqliteD1 } from "../../tests/sqlite-d1";
-import { MAX_BODY_BYTES } from "../protocol/chat";
+import { MAX_BODY_BYTES } from "../protocol/limits";
 import type { ServerEvent } from "../protocol/events";
 import { SseParser } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
@@ -290,6 +290,62 @@ describe("Conversation POST /assistant/chat", () => {
     ]);
   });
 
+  describe("a long message", () => {
+    const longMessage = (n: number, unit = "a") => ({ message: unit.repeat(Math.ceil(n / unit.length)).slice(0, n) });
+
+    it("accepts 12,000 characters and counts it as three turns: conversation, visitor and shared", async () => {
+      const h = await chatSetup();
+      const res = await h.conversation.fetch(chat(h.token, longMessage(12_000)));
+      expect(res.status).toBe(200);
+      await readEvents(res);
+      expect(h.data.get("turnsStarted")).toBe(3);
+      expect(await h.spentToday()).toBe(3);
+      expect(h.visitorCounts()).toEqual([3]);
+    });
+
+    it("counts 4,000 characters as one turn", async () => {
+      const h = await chatSetup();
+      await readEvents(await h.conversation.fetch(chat(h.token, longMessage(4000))));
+      expect(h.data.get("turnsStarted")).toBe(1);
+      expect(await h.spentToday()).toBe(1);
+    });
+
+    it("refuses 12,001 characters with 400, counting nothing", async () => {
+      const h = await chatSetup();
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(12_001))))).toEqual({ status: 400, body: { error: "bad_request" } });
+      expect(await h.spentToday()).toBe(0);
+      expect(h.data.get("turnsStarted")).toBeUndefined();
+    });
+
+    it.each([
+      ["wide characters", "語"],
+      ["emoji pairs", "😀"],
+    ])("accepts 12,000 characters of %s within the body limit", async (_name, unit) => {
+      const h = await chatSetup();
+      const res = await h.conversation.fetch(chat(h.token, longMessage(12_000, unit)));
+      expect(res.status).toBe(200);
+      await readEvents(res);
+      expect(await h.spentToday()).toBe(3);
+    });
+
+    it("gives the conversation its three turns back when the visitor's day refuses it", async () => {
+      const h = await chatSetup({ vars: { DAILY_TURNS_PER_IP: "2" }, turnsStarted: 5 });
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(8000))))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "visitor" },
+      });
+      expect(h.data.get("turnsStarted")).toBe(5);
+      expect(await h.spentToday()).toBe(0);
+    });
+
+    it("replies 429 limit when fewer than three of the conversation's turns are left", async () => {
+      const h = await chatSetup({ turnsStarted: 28 });
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(8000))))).toEqual({ status: 429, body: { error: "limit" } });
+      expect(h.data.get("turnsStarted")).toBe(28);
+      expect(await h.spentToday()).toBe(0);
+    });
+  });
+
   it("refuses a missing, malformed, wrong or expired token with 401", async () => {
     const h = await chatSetup();
     const conversationId = parseToken(h.token)?.conversationId ?? "";
@@ -310,7 +366,7 @@ describe("Conversation POST /assistant/chat", () => {
       { message: "   " },
       { message: "\u200B\u202E" }, // only invisible characters: nothing left once sanitized
       { message: 42 },
-      { message: "x".repeat(4001) },
+      { message: "x".repeat(12_001) },
       { message: QUESTION, padding: "y".repeat(MAX_BODY_BYTES) },
     ];
     for (const body of bad) {

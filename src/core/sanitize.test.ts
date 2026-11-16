@@ -29,18 +29,19 @@ describe("sanitizeInput", () => {
     expect(sanitizeInput(text)).toBe(text);
   });
 
-  it("caps input at 4000 characters", () => {
-    expect(MAX_INPUT_CHARS).toBe(4000);
-    expect(sanitizeInput("a".repeat(5000))).toHaveLength(4000);
+  it("caps input at 12,000 characters, or at the cap it is given", () => {
+    expect(MAX_INPUT_CHARS).toBe(12_000);
+    expect(sanitizeInput("a".repeat(13_000))).toHaveLength(12_000);
+    expect(sanitizeInput("a".repeat(5000), 4000)).toHaveLength(4000);
   });
 
   it("strips before capping, so invisible characters do not use up the limit", () => {
-    expect(sanitizeInput("\u200B".repeat(100) + "a".repeat(4000))).toBe("a".repeat(4000));
+    expect(sanitizeInput("\u200B".repeat(100) + "a".repeat(12_000))).toBe("a".repeat(12_000));
   });
 
   it("never cuts an emoji in half at the cap", () => {
-    const out = sanitizeInput("a" + "😀".repeat(2500));
-    expect(out.length).toBeLessThanOrEqual(4000);
+    const out = sanitizeInput("a" + "😀".repeat(7500));
+    expect(out.length).toBeLessThanOrEqual(12_000);
     expect(out).not.toMatch(LONE_HIGH_SURROGATE);
   });
 });

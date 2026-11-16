@@ -3,8 +3,9 @@ import type { z } from "zod";
 import bundle from "../../knowledge/bundle.json" with { type: "json" };
 import { buildStable, promptHash } from "../core/prompt";
 import { sanitizeInput } from "../core/sanitize";
-import { ChatRequestSchema, MAX_BODY_BYTES, tokenFromAuthorization } from "../protocol/chat";
+import { ChatRequestSchema, tokenFromAuthorization } from "../protocol/chat";
 import { parseClientMessage, type ServerEvent } from "../protocol/events";
+import { MAX_BODY_BYTES, turnsFor } from "../protocol/limits";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { WS_SUBPROTOCOL } from "../protocol/version";
@@ -219,7 +220,8 @@ export class Conversation extends DurableObject<Env> {
    * One text answer, streamed as server-sent events. Checks in order: token (401), body (400), an
    * answer already streaming (409), the conversation's turns (429 `limit`), then the day's turns
    * (503 `resting` with a `reason`: `visitor` for this visitor's own, `ceiling` for everyone's,
-   * `outage` when the ledger fails). The conversation's turn is counted first,
+   * `outage` when the ledger fails). A message over LONG_MESSAGE_CHARS counts as three turns in
+   * each. The conversation's turns are counted first,
    * with no await between check and count, so a voice turn on the same conversation cannot take the
    * last one too; a refused spend gives it back.
    * The answer stops, and stops costing, when the visitor aborts the request or the response
@@ -230,7 +232,9 @@ export class Conversation extends DurableObject<Env> {
     if (!session) return json({ error: "auth" }, 401);
     const { conversationId } = session;
     const body = await readJson(request, ChatRequestSchema);
-    if (!body || !sanitizeInput(body.message).trim()) return json({ error: "bad_request" }, 400);
+    // What the model will see, so the count below is of the same text.
+    const message = body ? sanitizeInput(body.message).trim() : "";
+    if (!message) return json({ error: "bad_request" }, 400);
     // Set before the next await, so a double send cannot slip in while this one is checked.
     if (this.answering) return json({ error: "busy" }, 409);
     this.answering = true;
@@ -240,17 +244,18 @@ export class Conversation extends DurableObject<Env> {
       const providers = buildProviders(this.env);
       const hash = await (this.hash ??= promptHash(buildStable(bundle)));
       const state = await this.loadState(log);
-      if (!state.startTurn()) return json({ error: "limit" }, 429);
+      const turns = turnsFor(message);
+      if (!state.startTurn(turns)) return json({ error: "limit" }, 429);
       // Whatever makes the spend throw, the turn is undone and the visitor hears an outage, not a 500.
       // The canary read is inside the guard too: a storage failure there is the same outage.
       const spent = await this.isCanary()
-        .then((canary) => admitTurn(this.env, clientIp(request), log, { skipOutage: canary }))
+        .then((canary) => admitTurn(this.env, clientIp(request), log, { skipOutage: canary, turns }))
         .catch((err: unknown): TurnSpend => {
           log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
           return "outage";
         });
       if (spent !== "ok") {
-        state.undoTurn();
+        state.undoTurn(turns);
         return json({ error: "resting", reason: spent }, 503);
       }
 
@@ -262,7 +267,7 @@ export class Conversation extends DurableObject<Env> {
         bundle,
         promptHash: hash,
         state,
-        message: body.message,
+        message,
         signal: AbortSignal.any([request.signal, stop.signal]),
         now: () => Date.now(),
         log,

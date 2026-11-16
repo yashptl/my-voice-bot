@@ -1,4 +1,4 @@
-import { MAX_MESSAGE_CHARS } from "../protocol/chat";
+import { MAX_MESSAGE_CHARS } from "../protocol/limits";
 
 /**
  * Longest visitor message the brain accepts, in UTF-16 code units: the protocol's limit, enforced
@@ -19,13 +19,14 @@ export function normalizeText(text: string): string {
 
 /**
  * Cleans untrusted visitor text before it reaches the model. NFKC-normalizes first, so look-alikes
- * such as a fullwidth underscore become what they imitate, then strips invisible characters, then caps.
+ * such as a fullwidth underscore become what they imitate, then strips invisible characters, then
+ * caps at `max` (a voice transcript passes its own, shorter cap).
  */
-export function sanitizeInput(text: string): string {
+export function sanitizeInput(text: string, max = MAX_INPUT_CHARS): string {
   const clean = normalizeText(text);
-  if (clean.length <= MAX_INPUT_CHARS) return clean;
+  if (clean.length <= max) return clean;
   // Never leave half of a surrogate pair at the cut.
-  const last = clean.charCodeAt(MAX_INPUT_CHARS - 1);
-  const end = last >= 0xd800 && last <= 0xdbff ? MAX_INPUT_CHARS - 1 : MAX_INPUT_CHARS;
+  const last = clean.charCodeAt(max - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
   return clean.slice(0, end);
 }

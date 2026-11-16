@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
  */
 const ROOT = resolve(import.meta.dirname, "..");
 const CLIENT = resolve(ROOT, "src/client");
-const PROTOCOL_FILES = ["sse.ts", "version.ts", "audio.ts"].map((f) => resolve(ROOT, "src/protocol", f));
+const PROTOCOL_FILES = ["sse.ts", "version.ts", "audio.ts", "limits.ts"].map((f) => resolve(ROOT, "src/protocol", f));
 
 interface Import {
   specifier: string;

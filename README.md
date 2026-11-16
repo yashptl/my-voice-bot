@@ -45,6 +45,8 @@ All counts are per UTC day and live in D1. If D1 can't be reached, the assistant
 | --- | --- | --- |
 | Session requests, per IP | 10 a minute (separate keys for `/session`, `/chat` and `/voice`) | 429 `rate_limited` |
 | One answer at a time, per conversation | 1 | `/chat`: 409 `busy` |
+| Message length, text | 12,000 characters (a voice transcript is cut at 4,000) | `/chat`: 400 `bad_request` |
+| A long message | Over 4,000 characters counts as three questions, against the conversation, the visitor's day and the shared day | `/chat`: 429 `limit` or 503 `resting`, when three do not fit |
 | Questions per conversation, text and voice together | 30 | `/chat`: 429 `limit`; voice: `error` event `limit`, then the socket closes (1008) |
 | Mic audio per conversation | 600 s | voice: `error` `limit`, socket closes |
 | Model turns per visitor (client IP), text and voice | `DAILY_TURNS_PER_IP` = 60 | `/chat`: 429 `limit`; voice: `error` `limit`, socket closes |

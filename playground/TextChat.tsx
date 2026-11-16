@@ -5,7 +5,7 @@ import { DISCLOSURE } from "../src/client/disclosure";
 import { useAssistant } from "../src/client/react";
 import { getTurnstileToken, TEST_SITE_KEY } from "../src/client/turnstile";
 import { DEFAULT_BASE_URL } from "../src/client/urls";
-import { MAX_MESSAGE_CHARS } from "../src/protocol/chat";
+import { MAX_MESSAGE_CHARS } from "../src/protocol/limits";
 // no-inline: a small file would otherwise become a data: URL; the worklet must load same-origin.
 import workletUrl from "../src/client/capture-worklet.js?url&no-inline";
 import { Inspector } from "./Inspector";

@@ -91,18 +91,18 @@ export class ConversationState {
     return result;
   }
 
-  /** Counts a new turn; false (and nothing counted) once the conversation has used its turns. */
-  startTurn(): boolean {
-    if (this.started >= this.maxTurns) return false;
-    this.started++;
+  /** Counts `n` new turns (a long message counts as several); false, and nothing counted, when they do not all fit. */
+  startTurn(n = 1): boolean {
+    if (this.started + n > this.maxTurns) return false;
+    this.started += n;
     this.save("turnsStarted", this.started);
     return true;
   }
 
-  /** Gives back the turn startTurn counted, when a daily ceiling refused it before any answer. */
-  undoTurn(): void {
+  /** Gives back the `n` turns startTurn counted, when a daily ceiling refused them before any answer; never below 0. */
+  undoTurn(n = 1): void {
     if (this.started === 0) return;
-    this.started--;
+    this.started = Math.max(0, this.started - n);
     this.save("turnsStarted", this.started);
   }
 

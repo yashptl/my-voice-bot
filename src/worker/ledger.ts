@@ -141,32 +141,32 @@ function wholeVar(env: Env, name: CountVar, fallback: number, log: Log): number 
 export type TurnSpend = "ok" | RestingReason;
 
 /**
- * Spends one model turn today (UTC): one of the visitor's (DAILY_TURNS_PER_IP, keyed by visitorKey)
- * and one of everyone's (DAILY_TURNS). The two run concurrently, so a turn waits one D1 round trip.
+ * Spends `turns` model turns (one, by default; a long message counts as more) today (UTC): that many
+ * of the visitor's (DAILY_TURNS_PER_IP, keyed by visitorKey) and of everyone's (DAILY_TURNS). The two run concurrently, so a turn waits one D1 round trip.
  * If either is refused or fails, the other is given back, so a refused turn costs nothing.
  *
  * "ceiling": everyone's day is used (also when the visitor's is too). "visitor": only the visitor's
  * is. "outage": a spend failed, or IP_HASH_KEY is missing, and neither was refused: an unchecked
  * turn could pass a ceiling, so it fails closed.
  */
-export async function spendTurn(env: Env, ip: string, log: Log): Promise<TurnSpend> {
-  return spendTurnOn(env, ip, utcDay(Date.now()), log);
+export async function spendTurn(env: Env, ip: string, log: Log, turns = 1): Promise<TurnSpend> {
+  return spendTurnOn(env, ip, utcDay(Date.now()), log, turns);
 }
 
 /** spendTurn for a given `day`, so a caller that may give the spend back refunds the day it spent from. */
-async function spendTurnOn(env: Env, ip: string, day: string, log: Log): Promise<TurnSpend> {
+async function spendTurnOn(env: Env, ip: string, day: string, log: Log, turns: number): Promise<TurnSpend> {
   const key = keyFor(env, day, ip);
   const [visitor, everyone] = await Promise.all([
     outcome(
-      key.then((k) => spendVisitor(env.DB, k, turnsPerIp(env, log), day)),
+      key.then((k) => spendVisitor(env.DB, k, turnsPerIp(env, log), day, turns)),
       log,
     ),
-    outcome(spend(env.DB, "turns", 1, ceiling(env, "turns", log), day), log),
+    outcome(spend(env.DB, "turns", turns, ceiling(env, "turns", log), day), log),
   ]);
   if (visitor === "ok" && everyone === "ok") return "ok";
   await Promise.all([
-    visitor === "ok" && quietly(key.then((k) => refundVisitor(env.DB, k, day)), log),
-    everyone === "ok" && quietly(refund(env.DB, "turns", 1, day), log),
+    visitor === "ok" && quietly(key.then((k) => refundVisitor(env.DB, k, day, turns)), log),
+    everyone === "ok" && quietly(refund(env.DB, "turns", turns, day), log),
   ]);
   if (everyone === "refused") return "ceiling";
   return visitor === "refused" ? "visitor" : "outage";
@@ -177,18 +177,19 @@ async function spendTurnOn(env: Env, ip: string, day: string, log: Log): Promise
  * round trip. A turn refused for a ceiling or a visitor cap says so, flag or not. Otherwise a set
  * flag, or a flag read that fails, is "outage", and the spend just made is given back, so a refused
  * turn costs nothing. `skipOutage` ignores the flag: the canary's conversation is how the owner
- * learns the provider is back.
+ * learns the provider is back. `turns` is what the message counts as (turnsFor), 1 by default.
  */
-export async function admitTurn(env: Env, ip: string, log: Log, o: { skipOutage?: boolean } = {}): Promise<TurnSpend> {
+export async function admitTurn(env: Env, ip: string, log: Log, o: { skipOutage?: boolean; turns?: number } = {}): Promise<TurnSpend> {
   const day = utcDay(Date.now());
+  const turns = o.turns ?? 1;
   const [spent, outage] = await Promise.all([
-    spendTurnOn(env, ip, day, log),
+    spendTurnOn(env, ip, day, log, turns),
     o.skipOutage ? false : attempt(async () => (await readOutage(env.DB)) !== null, log),
   ]);
   if (spent !== "ok" || outage === false) return spent;
   await Promise.all([
-    quietly(keyFor(env, day, ip).then((k) => refundVisitor(env.DB, k, day)), log),
-    quietly(refund(env.DB, "turns", 1, day), log),
+    quietly(keyFor(env, day, ip).then((k) => refundVisitor(env.DB, k, day, turns)), log),
+    quietly(refund(env.DB, "turns", turns, day), log),
   ]);
   return "outage";
 }

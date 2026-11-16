@@ -2,6 +2,7 @@ export * from "./audio";
 export * from "./chat";
 export * from "./data-line";
 export * from "./events";
+export * from "./limits";
 export * from "./refs";
 export * from "./sse";
 export * from "./turn-record";

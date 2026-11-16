@@ -102,6 +102,22 @@ describe("ConversationState", () => {
     expect((await ConversationState.load({ storage, now: () => Date.now() })).turnsStarted).toBe(0);
   });
 
+  it("startTurn(n) counts n turns, or nothing when n do not fit; undoTurn(n) gives n back", async () => {
+    const storage = memoryStorage();
+    const state = stateOn(storage);
+    for (let i = 0; i < 28; i++) state.startTurn();
+    expect(state.startTurn(3)).toBe(false);
+    expect(state.turnsStarted).toBe(28);
+    state.undoTurn();
+    expect(state.startTurn(3)).toBe(true);
+    expect(state.turnsStarted).toBe(30);
+    expect((await ConversationState.load({ storage, now: () => Date.now() })).turnsStarted).toBe(30);
+    state.undoTurn(3);
+    expect(state.turnsStarted).toBe(27);
+    state.undoTurn(40);
+    expect(state.turnsStarted).toBe(0);
+  });
+
   it("keeps the history as exchanges and lets an answer be trimmed", () => {
     const state = stateOn(memoryStorage());
     const index = state.addExchange("Where does Yash work?", "Yash works at Magenta Connect. Want more?");
