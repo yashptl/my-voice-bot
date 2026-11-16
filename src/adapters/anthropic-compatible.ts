@@ -94,8 +94,10 @@ async function* streamMessages(
         cachedInput = count(data.usage?.cache_read_input_tokens, cachedInput);
         output = count(data.usage?.output_tokens, output);
       } else if (type === "error") {
-        const kind = errorKind(undefined, str(data.error?.type));
-        throw new LlmError(kind, `${profile.id}: stream error: ${detail(data.error?.message)}`);
+        const message = str(data.error?.message);
+        const code = providerCode(data, message);
+        const kind = errorKind(undefined, str(data.error?.type), code);
+        throw new LlmError(kind, `${profile.id}: stream error: ${detail(message)}`, { code });
       } else if (type === "message_stop") {
         stopped = true;
         break; // Anything after message_stop (e.g. a "[DONE]" sentinel) is not ours to parse.
@@ -183,24 +185,50 @@ async function responseError(profile: LlmProfile, res: Response): Promise<LlmErr
   const raw = await res.text().catch(() => "");
   let type: string | undefined;
   let message = raw;
+  let code: number | undefined;
   try {
-    const parsed = JSON.parse(raw) as {
-      error?: { type?: unknown; message?: unknown };
-      base_resp?: { status_msg?: unknown };
-      message?: unknown;
-    };
+    const parsed = JSON.parse(raw) as ErrorBody;
     type = typeof parsed.error?.type === "string" ? parsed.error.type : undefined;
     const candidate = parsed.error?.message ?? parsed.base_resp?.status_msg ?? parsed.message;
     if (typeof candidate === "string") message = candidate;
+    code = providerCode(parsed, typeof candidate === "string" ? candidate : undefined);
   } catch {
     // Not JSON: keep the raw text.
   }
   const status = res.ok ? undefined : res.status;
   const label = res.ok ? `HTTP ${res.status} without an event stream` : `HTTP ${res.status}`;
-  return new LlmError(errorKind(status, type), `${profile.id}: ${label}: ${detail(message)}`, { status: res.status });
+  return new LlmError(errorKind(status, type, code), `${profile.id}: ${label}: ${detail(message)}`, { status: res.status, code });
 }
 
-function errorKind(status: number | undefined, type: string | undefined): LlmErrorKind {
+/**
+ * MiniMax's own codes for a used-up plan or credit (quota) and for a rejected or unusable key (auth).
+ * They arrive under HTTP statuses that say little (often a 429 or a 500), so they win over the status.
+ */
+const MINIMAX_QUOTA_CODES: ReadonlySet<number> = new Set([1008, 2053, 2056, 2067]);
+const MINIMAX_AUTH_CODES: ReadonlySet<number> = new Set([1004, 2049]);
+/** Plain throttling: the one retry can clear it. */
+const MINIMAX_RATE_LIMIT_CODES: ReadonlySet<number> = new Set([1002, 2062]);
+const LISTED_CODE_IN_MESSAGE = /\b(1004|1008|2049|2053|2056|2067)\b/;
+
+/**
+ * The provider's numeric code. No error body was ever recorded, so look in the three places a
+ * MiniMax or Anthropic-style body might hold it, then, last, for a listed code standing alone in the message.
+ */
+function providerCode(body: ErrorBody, message: string | undefined): number | undefined {
+  for (const v of [body.base_resp?.status_code, body.error?.code, body.code]) {
+    const n = typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : v;
+    if (typeof n === "number" && Number.isInteger(n)) return n;
+  }
+  const listed = message ? LISTED_CODE_IN_MESSAGE.exec(message) : null;
+  return listed ? Number(listed[1]) : undefined;
+}
+
+function errorKind(status: number | undefined, type: string | undefined, code?: number): LlmErrorKind {
+  if (code !== undefined) {
+    if (MINIMAX_QUOTA_CODES.has(code)) return "quota";
+    if (MINIMAX_AUTH_CODES.has(code)) return "auth";
+    if (MINIMAX_RATE_LIMIT_CODES.has(code)) return "rate_limit";
+  }
   if (status === 401 || status === 403 || type === "authentication_error" || type === "permission_error") return "auth";
   if (status === 429 || type === "rate_limit_error") return "rate_limit";
   if (status === 529 || status === 503 || type === "overloaded_error") return "overloaded";
@@ -222,6 +250,14 @@ function detail(message: unknown): string {
   return text.length > MAX_ERROR_DETAIL ? `${text.slice(0, MAX_ERROR_DETAIL)}…` : text;
 }
 
+/** The error shapes this adapter reads, from an HTTP error body or a stream error event. */
+interface ErrorBody {
+  error?: { type?: unknown; message?: unknown; code?: unknown };
+  base_resp?: { status_code?: unknown; status_msg?: unknown };
+  code?: unknown;
+  message?: unknown;
+}
+
 /** The subset of Messages API stream events this adapter reads; everything is optional because it is untrusted. */
 interface StreamEvent {
   type?: unknown;
@@ -229,7 +265,9 @@ interface StreamEvent {
   content_block?: ContentPart;
   delta?: ContentPart & { stop_reason?: unknown };
   usage?: Usage;
-  error?: { type?: unknown; message?: unknown };
+  error?: { type?: unknown; message?: unknown; code?: unknown };
+  base_resp?: { status_code?: unknown };
+  code?: unknown;
 }
 
 /** A `content_block_start` block or a `content_block_delta` delta. */

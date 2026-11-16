@@ -22,6 +22,8 @@ export type ErrorCode =
   | "rate_limited"
   | "auth"
   | "provider"
+  /** The model took too long: the answer's deadline or the gap between its chunks. */
+  | "timeout"
   | "limit"
   | "resting"
   /** Voice only: the day's voice ceilings are reached. Answers continue as text; the socket closes. */

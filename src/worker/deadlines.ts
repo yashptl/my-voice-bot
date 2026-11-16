@@ -1,6 +1,6 @@
 import { LlmError, type LlmErrorKind, type LlmPort, type LlmRequest } from "../ports/llm";
 
-/** Deadlines for one answer's LLM stream, voice and text alike. Missing one ends the turn with a provider error. */
+/** Deadlines for one answer's LLM stream, voice and text alike. Missing one ends the turn with a timeout error. */
 export const LLM_TOTAL_MS = 30_000;
 /** Longest gap between LLM chunks. Reasoning arrives as a single tick, so this also caps silent thinking. */
 export const LLM_IDLE_MS = 10_000;
@@ -94,7 +94,9 @@ async function* attempt(llm: LlmPort, req: LlmRequest, signal: AbortSignal | und
       const next = await within(chunks.next(), overall ? endAt - o.now() : o.idleMs, signal);
       if (next === STOPPED) {
         if (signal?.aborted) throw abortError();
-        throw new LlmError("timeout", overall ? `no complete answer within ${o.totalMs} ms` : `nothing for ${o.idleMs} ms`);
+        throw new LlmError("timeout", overall ? `no complete answer within ${o.totalMs} ms` : `nothing for ${o.idleMs} ms`, {
+          deadline: overall ? "total" : "idle",
+        });
       }
       if (next.done) {
         finished = true;

@@ -237,6 +237,40 @@ describe("textTurn", () => {
     }
   });
 
+  it("a missed total deadline is a timeout error whose record says which deadline", async () => {
+    const h = setup({
+      llm: {
+        id: "slow",
+        model: "slow-model",
+        // eslint-disable-next-line require-yield
+        async *stream() {
+          throw new LlmError("timeout", "too slow", { deadline: "total" });
+        },
+      },
+    });
+    const out = await collect(h.run());
+    expect(out.map((e) => e.type)).toEqual(["turn.start", "error", "turn.end"]);
+    expect(out[1]).toEqual({ type: "error", code: "timeout", message: expect.any(String) });
+    expect(recordOf(out)).toMatchObject({ error: "llm_timeout_total" });
+  });
+
+  it("a rejected key is a resting error for an outage, and the log holds no provider text", async () => {
+    const h = setup({
+      llm: {
+        id: "rejected",
+        model: "rejected-model",
+        // eslint-disable-next-line require-yield
+        async *stream() {
+          throw new LlmError("auth", "secret provider text", { status: 401, code: 1004 });
+        },
+      },
+    });
+    const out = await collect(h.run());
+    expect(out[1]).toEqual({ type: "error", code: "resting", reason: "outage", message: expect.any(String) });
+    expect(recordOf(out)).toMatchObject({ error: "llm_auth" });
+    expect(h.logs).toEqual(["error: llm failed: auth 401 1004"]);
+  });
+
   it("answers normally when the provider's first refusal (a rate limit) clears on the retry", async () => {
     vi.useFakeTimers();
     try {

@@ -4,7 +4,7 @@ import { buildStable, promptHash } from "../core/prompt";
 import { respond } from "../core/respond";
 import { sanitizeInput } from "../core/sanitize";
 import type { Bundle } from "../knowledge/types";
-import { LlmError, type LlmPort, type LlmUsage, type NeutralTurn } from "../ports/llm";
+import type { LlmPort, LlmUsage, NeutralTurn } from "../ports/llm";
 import type { SttEvent, SttPort, SttSession } from "../ports/stt";
 import type { TtsPort, TtsSession } from "../ports/tts";
 import { encodeAudioFrame, MIC_FRAME_BYTES } from "../protocol/audio";
@@ -17,6 +17,7 @@ import { LLM_IDLE_MS, LLM_TOTAL_MS, STOPPED, within, withDeadlines } from "./dea
 import type { Gap } from "./gap-log";
 import { AUDIO_BLOCK_SECONDS, MAX_SPOKEN_CHARS, type TurnSpend, type VoiceUnit } from "./ledger";
 import { sourcesOf } from "./text-turn";
+import { turnFailure } from "./turn-failure";
 
 /** Flux sessions per socket; each quiet gap between questions costs one. */
 const MAX_STT_SESSIONS = 60;
@@ -664,9 +665,10 @@ export class VoiceLoop {
       }
     } catch (err) {
       if (t.stopped) return; // interrupted or closed: already handled
-      t.error = err instanceof LlmError ? `llm_${err.kind}` : "llm_failed";
-      this.o.log?.("error", `llm failed: ${err instanceof LlmError ? `${err.kind} ${err.status ?? ""}`.trim() : "unexpected error"}`);
-      this.send({ type: "error", code: "provider", message: "The assistant could not finish that answer. Please try again." });
+      const failure = turnFailure(err);
+      t.error = failure.record;
+      this.o.log?.("error", failure.logLine);
+      this.sendError(failure.code, failure.message, failure.reason);
     }
     const tts = await t.tts;
     if (tts && !t.stopped) {

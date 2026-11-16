@@ -3,13 +3,14 @@ import { GateTally } from "../core/output-gate";
 import { respond, type RespondEvent } from "../core/respond";
 import { sanitizeInput } from "../core/sanitize";
 import type { Bundle } from "../knowledge/types";
-import { LlmError, type LlmPort, type LlmUsage } from "../ports/llm";
+import type { LlmPort, LlmUsage } from "../ports/llm";
 import type { DataLine, DataLineStatus } from "../protocol/data-line";
 import type { ServerEvent, Source } from "../protocol/events";
 import type { Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import type { ConversationState, Log } from "./conversation-state";
 import type { Gap } from "./gap-log";
+import { turnFailure } from "./turn-failure";
 import { LLM_IDLE_MS, LLM_TOTAL_MS, withDeadlines } from "./deadlines";
 
 export interface TextTurnOptions {
@@ -160,9 +161,12 @@ export async function* textTurn(o: TextTurnOptions): AsyncIterable<ServerEvent> 
       }
     } catch (err) {
       if (!signal.aborted) {
-        error = err instanceof LlmError ? `llm_${err.kind}` : "llm_failed";
-        o.log("error", `llm failed: ${err instanceof LlmError ? `${err.kind} ${err.status ?? ""}`.trim() : "unexpected error"}`);
-        yield { type: "error", code: "provider", message: "The assistant could not finish that answer. Please try again." };
+        const failure = turnFailure(err);
+        error = failure.record;
+        o.log("error", failure.logLine);
+        yield failure.reason
+          ? { type: "error", code: failure.code, message: failure.message, reason: failure.reason }
+          : { type: "error", code: failure.code, message: failure.message };
       }
     }
     if (signal.aborted) return; // stopped: the finally below keeps what was shown

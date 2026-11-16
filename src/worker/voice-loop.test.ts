@@ -699,13 +699,33 @@ describe("VoiceLoop interrupt", () => {
   });
 });
 
+describe("VoiceLoop failed answers", () => {
+  it("a rejected key rests the assistant for an outage and records llm_auth", async () => {
+    const rejected: LlmPort = {
+      id: "rejected",
+      model: "rejected-model",
+      // eslint-disable-next-line require-yield
+      async *stream() {
+        throw new LlmError("auth", "bad key", { status: 401 });
+      },
+    };
+    const h = setup({ llm: rejected });
+    await h.loop.start();
+    await ask(h, QUESTION);
+    await vi.runAllTimersAsync();
+    expect(of(h.out, "error")).toEqual([expect.objectContaining({ code: "resting", reason: "outage" })]);
+    expect(records(h.out)).toMatchObject([{ error: "llm_auth", interrupted: false }]);
+    expect(h.closes).toEqual([]);
+  });
+});
+
 describe("VoiceLoop deadlines", () => {
   const never = () => new Promise<never>(() => {});
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  /** The turn ended with a provider error and this record error, and the loop is listening again. */
-  function expectTimedOut(h: H, error: string) {
-    expect(kinds(h.out).slice(-3)).toEqual(["error:provider", "turn.end", "state:listening"]);
+  /** The turn ended with an error of this code and this record error, and the loop is listening again. */
+  function expectTimedOut(h: H, error: string, code = "provider") {
+    expect(kinds(h.out).slice(-3)).toEqual([`error:${code}`, "turn.end", "state:listening"]);
     expect(records(h.out)).toMatchObject([{ error, interrupted: false }]);
     expect(h.closes).toEqual([]);
   }
@@ -727,7 +747,7 @@ describe("VoiceLoop deadlines", () => {
     await vi.advanceTimersByTimeAsync(9_900);
     expect(of(h.out, "turn.end")).toEqual([]);
     await vi.advanceTimersByTimeAsync(200);
-    expectTimedOut(h, "llm_timeout");
+    expectTimedOut(h, "llm_timeout_idle", "timeout");
     expect(signals[0]?.aborted).toBe(true); // the provider request is cancelled too
     expect(h.logs).toContainEqual(expect.stringMatching(/^error: llm failed: timeout/));
   });
@@ -749,7 +769,7 @@ describe("VoiceLoop deadlines", () => {
     await vi.advanceTimersByTimeAsync(29_900);
     expect(of(h.out, "turn.end")).toEqual([]);
     await vi.advanceTimersByTimeAsync(200);
-    expectTimedOut(h, "llm_timeout");
+    expectTimedOut(h, "llm_timeout_total", "timeout");
   });
 
   it("keeps the captions when speech does not open within 5 s, and cancels it if it opens later", async () => {
