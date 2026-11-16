@@ -291,7 +291,7 @@ describe("Conversation POST /assistant/chat", () => {
     const res = await h.conversation.fetch(chat(h.token));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
-    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("cache-control")).toBe("no-store, no-transform");
     const events = await readEvents(res);
     const types = events.map((e) => e.type);
     expect(types[0]).toBe("turn.start");

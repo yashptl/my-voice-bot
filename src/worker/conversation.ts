@@ -305,8 +305,10 @@ export class Conversation extends DurableObject<Env> {
         cancel: () => stop.abort(),
       });
       streaming = true;
+      // no-transform: a proxy in front (a dev rewrite, a CDN) must not compress the stream, or it
+      // holds every sentence until the answer ends.
       return new Response(stream, {
-        headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" },
+        headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform" },
       });
     } finally {
       if (!streaming) this.answering = false;
