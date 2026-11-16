@@ -392,6 +392,29 @@ describe("GET /assistant/health", () => {
   });
 });
 
+describe("GET /assistant/blueprint", () => {
+  const blueprint = (method = "GET") =>
+    call(new Request("https://example.test/assistant/blueprint", { method }), setup().env);
+
+  it("serves the blueprint document as HTML, cacheable for an hour", async () => {
+    const res = await blueprint();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(await res.text()).toContain("<title>YashOS Assistant Blueprint</title>");
+  });
+
+  it("answers other methods 405", async () => {
+    const res = await blueprint("POST");
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
+  });
+
+  it("leaves other paths under /assistant a 404", async () => {
+    expect((await call(new Request("https://example.test/assistant/nope"), setup().env)).status).toBe(404);
+  });
+});
+
 describe("scheduled", () => {
   const run = (env: Env) => {
     const waits: Promise<unknown>[] = [];

@@ -1,3 +1,4 @@
+import blueprint from "../../docs/design/assistant-blueprint.html?raw";
 import { SessionRequestSchema, tokenFromAuthorization, type SessionResponse } from "../protocol/chat";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import { mintToken, parseToken, tokenFromProtocols } from "./auth";
@@ -89,6 +90,16 @@ async function chat(request: Request, env: Env): Promise<Response> {
   return env.CONVERSATION.get(env.CONVERSATION.idFromName(parsed.conversationId)).fetch(request);
 }
 
+/**
+ * The design document, one copy in docs/design/, bundled into the Worker as text (Vite's `?raw`) so
+ * it needs no second copy among the assets. Public on purpose; the hour of caching keeps a share of
+ * the link from reaching the Worker each time.
+ */
+const blueprintPage = () =>
+  new Response(blueprint, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=3600" },
+  });
+
 /** Deletes what is past its retention; logs the counts, or why it failed. */
 async function prune(db: D1Database, now: number): Promise<void> {
   try {
@@ -134,6 +145,8 @@ export default {
         return request.method === "GET" ? openVoice(request, env) : notAllowed("GET");
       case "/assistant/health":
         return request.method === "GET" ? health(env) : notAllowed("GET");
+      case "/assistant/blueprint":
+        return request.method === "GET" ? blueprintPage() : notAllowed("GET");
     }
     if (pathname === "/assistant" || pathname.startsWith("/assistant/")) return json({ error: "not_found" }, 404);
     return env.ASSETS.fetch(request);

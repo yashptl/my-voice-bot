@@ -49,7 +49,7 @@ All counts are per UTC day and live in D1. If D1 can't be reached, the assistant
 | A long message | Over 4,000 characters counts as three questions, against the conversation, the visitor's day and the shared day | `/chat`: 429 `limit` or 503 `resting`, when three do not fit |
 | Questions per conversation, text and voice together | 30 | `/chat`: 429 `limit`; voice: `error` event `limit`, then the socket closes (1008) |
 | Mic audio per conversation | 600 s | voice: `error` `limit`, socket closes |
-| Model turns per visitor (client IP), text and voice | `DAILY_TURNS_PER_IP` = 60 | `/chat`: 429 `limit`; voice: `error` `limit`, socket closes |
+| Model turns per visitor (client IP), text and voice | `DAILY_TURNS_PER_IP` = 60 | `/chat`: 503 `resting` with reason `visitor`; voice: `error` `resting` with reason `visitor`, socket closes |
 | Model turns, everyone | `DAILY_TURNS` = 400 | `/session` reports `resting: true`; `/chat`: 503 `resting`; voice: `error` `resting`, socket closes |
 | Mic seconds sent to Flux, everyone | `DAILY_VOICE_SECONDS` = 1800, reserved 15 s at a time | voice rests: `/session` returns `mode: "text"`; an open socket gets `error` `voice_resting` and closes; text carries on |
 | Characters sent to MiniMax speech, everyone | `DAILY_TTS_CHARS` = 60000, reserved 500 (one reply) at a time | voice rests, as above |
@@ -111,14 +111,24 @@ Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangl
 
 **Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, voice on, with ceilings of 100 answers, 1,200 s of listening and 30,000 spoken characters a day (and 600 s of listening per visitor), and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
 
-1. Create the production database once with `npx wrangler d1 create yashos-assistant`, and put its id in `wrangler.jsonc` as `database_id`. Then apply every migration, through the newest (`0006_gaps.sql`): `npx wrangler d1 migrations apply DB --remote`. Until the migrations are applied the assistant rests, because the ledger fails closed.
-2. Set the secrets with `npx wrangler secret put <NAME>`:
-   - `TURNSTILE_SECRET`: the real secret for the site key, not the test one;
-   - `IP_HASH_KEY`: `openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`;
-   - `MINIMAX_API_KEY`;
-   - `ALERT_TO`: the address of the verified Email Routing destination.
-3. Verify that Email Routing destination in the Cloudflare dashboard, and keep `yashos.dev` onboarded for sending (`ALERT_FROM` is `assistant@yashos.dev`).
-4. Put a real Turnstile site key in the host page; the playground's test key only works with the test secret.
-5. Do not set `ASSISTANT_DEMO` in production. After `npm run deploy`, check that `/assistant/health` says `ok: true` with nothing required missing.
-6. Check that the Rate Limiting binding works on the account's plan: an 11th `POST /assistant/session` from one IP within a minute should get `429`.
-7. `ASSISTANT_MODE` is `voice` in `wrangler.jsonc`, so **Workers Paid** ($5 a month) is needed now: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Confirm the voice ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.
+### First production deploy
+
+Production is one route, `yashos.dev/assistant/*` (in `wrangler.jsonc`), with no workers.dev or preview URL; the site's own Worker serves everything else. Run these once, in order:
+
+1. Create the database: `npx wrangler d1 create yashos-assistant`, then put the id it prints in `wrangler.jsonc` as `database_id` under `d1_databases`.
+2. Apply every migration, through `0007_flags.sql`: `npx wrangler d1 migrations apply DB --remote`. Until then the assistant rests, because the ledger fails closed.
+3. Set the required secret `TURNSTILE_SECRET`: `npx wrangler secret put TURNSTILE_SECRET`. It must be the secret paired with the site key YashOS uses for the assistant's widget, not the test one.
+4. Set the required secret `IP_HASH_KEY`: `openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`.
+5. Set the required secret `MINIMAX_API_KEY`: `npx wrangler secret put MINIMAX_API_KEY`.
+6. Verify the alert address as a destination in Cloudflare Email Routing, and keep `yashos.dev` onboarded for sending (`ALERT_FROM` is `assistant@yashos.dev`).
+7. Set the optional secret `ALERT_TO` to that verified address: `npx wrangler secret put ALERT_TO`. Without it alerts are only logged.
+8. Leave `ASSISTANT_DEMO` unset; it is for `.dev.vars` only.
+9. Deploy: `npm run deploy`.
+10. Check `https://yashos.dev/assistant/health` replies `ok: true` with nothing required missing: `curl -s https://yashos.dev/assistant/health`.
+11. Check `https://yashos.dev/assistant/blueprint` loads in a browser.
+12. Check a voice session connects over `wss://yashos.dev/assistant/voice`, by starting one from the YashOS widget with the real Turnstile site key.
+13. After the next hourly run (minute 17), check the logs show `canary ok`: `npx wrangler tail`.
+
+Also worth doing once: check the Rate Limiting binding works on the account's plan (an 11th `POST /assistant/session` from one IP within a minute should get `429`), and confirm the voice ceilings against the Workers AI and MiniMax dashboards.
+
+The account needs **Workers Paid** ($5 a month), because `ASSISTANT_MODE` is `voice` in `wrangler.jsonc`: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Confirm the voice ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.

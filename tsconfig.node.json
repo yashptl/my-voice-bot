@@ -13,6 +13,7 @@
     "src/core",
     "src/adapters",
     "src/knowledge",
+    "src/worker/raw-modules.d.ts",
     "*.config.ts",
     "**/*.test.ts"
   ],
