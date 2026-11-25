@@ -1,22 +1,34 @@
 import type { ChatRequest, SessionRequest, SessionResponse } from "../protocol/chat";
-import type { ErrorCode, ServerEvent } from "../protocol/events";
+import type { ErrorCode, RestingReason, ServerEvent } from "../protocol/events";
 import { SseParser } from "../protocol/sse";
 import { PROTOCOL_VERSION } from "../protocol/version";
 
-export type HttpErrorCode = ErrorCode | "bad_request" | "unknown";
+export type HttpErrorCode = ErrorCode | "off" | "bad_request" | "unknown";
 
 /** The `error` values a client acts on; anything else is "unknown". */
-const KNOWN_CODES = new Set<string>(["limit", "resting", "busy", "auth", "rate_limited", "bad_request"]);
+const KNOWN_CODES = new Set<string>(["limit", "resting", "busy", "auth", "rate_limited", "bad_request", "off"]);
 
-/** A non-200 reply from `/session` or `/chat`, with the server's `error` mapped to a code the UI can branch on. */
+/**
+ * A non-200 reply from `/session` or `/chat`, with the server's `error` mapped to a code the UI can
+ * branch on. `reason` is set (never null) only for code "resting".
+ */
 export class AssistantHttpError extends Error {
   constructor(
     readonly status: number,
     readonly code: HttpErrorCode,
     detail: string | null,
+    readonly reason: RestingReason | null = null,
   ) {
     super(`assistant replied HTTP ${status}${detail ? ` (${detail})` : ""}`);
     this.name = "AssistantHttpError";
+  }
+}
+
+/** The server and this client speak different protocol versions: the page needs a reload. */
+export class OutdatedError extends Error {
+  constructor(readonly server: number) {
+    super(`server speaks protocol ${server}, this client ${PROTOCOL_VERSION}`);
+    this.name = "OutdatedError";
   }
 }
 
@@ -34,10 +46,11 @@ export async function startSession(o: { baseUrl: string; turnstile: string; fetc
   });
   if (!res.ok) throw await httpError(res);
   const session: unknown = await res.json().catch(() => null);
-  if (!isSessionResponse(session)) throw new Error("session response is malformed");
-  if (session.protocol !== PROTOCOL_VERSION) {
-    throw new Error(`server speaks protocol ${session.protocol}, this client ${PROTOCOL_VERSION}`);
+  // The version first: another version's reply may have another shape, and the fix is a reload.
+  if (isRecord(session) && typeof session.protocol === "number" && session.protocol !== PROTOCOL_VERSION) {
+    throw new OutdatedError(session.protocol);
   }
+  if (!isSessionResponse(session)) throw new Error("session response is malformed");
   return session;
 }
 
@@ -103,10 +116,14 @@ function endpoint(baseUrl: string, name: "session" | "chat"): string {
 async function httpError(res: Response): Promise<AssistantHttpError> {
   const body: unknown = await res.json().catch(() => null);
   const error = isRecord(body) && typeof body.error === "string" ? body.error : null;
-  let code: HttpErrorCode = "unknown";
-  if (isRecord(body) && body.mode === "off") code = "resting"; // the kill switch reads as resting to a visitor
-  else if (error !== null && KNOWN_CODES.has(error)) code = error as HttpErrorCode;
-  return new AssistantHttpError(res.status, code, error);
+  const code: HttpErrorCode = error !== null && KNOWN_CODES.has(error) ? (error as HttpErrorCode) : "unknown";
+  const reason = code === "resting" ? restingReason(isRecord(body) ? body.reason : undefined) : null;
+  return new AssistantHttpError(res.status, code, error, reason);
+}
+
+/** A missing or unrecognised reason reads as an outage, the one that does not promise tomorrow. */
+export function restingReason(x: unknown): RestingReason {
+  return x === "ceiling" || x === "visitor" ? x : "outage";
 }
 
 function isSessionResponse(x: unknown): x is SessionResponse {
@@ -116,7 +133,7 @@ function isSessionResponse(x: unknown): x is SessionResponse {
     typeof x.protocol === "number" &&
     (x.mode === "voice" || x.mode === "text" || x.mode === "off") &&
     typeof x.expiresAt === "number" &&
-    typeof x.resting === "boolean"
+    (x.resting === null || x.resting === "ceiling" || x.resting === "visitor" || x.resting === "outage")
   );
 }
 

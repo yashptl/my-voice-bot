@@ -1,13 +1,19 @@
+import blueprint from "../../docs/design/assistant-blueprint.html?raw";
 import { SessionRequestSchema, tokenFromAuthorization, type SessionResponse } from "../protocol/chat";
 import { PROTOCOL_VERSION } from "../protocol/version";
+import { raiseAlert, reportVoiceUsedUp } from "./alerts";
 import { mintToken, parseToken, tokenFromProtocols } from "./auth";
-import { runCanary } from "./canary";
+import { demoMode, missingConfig } from "./config";
 import { readJson } from "./conversation";
 import type { Env } from "./env";
-import { pruneDays, restingToday } from "./ledger";
-import { buildProviders } from "./providers";
+import { pruneGaps } from "./gap-log";
+import { pruneDays, pruneVisitors, restingReason, voiceRestingToday } from "./ledger";
+import { buildProviders, NotConfiguredError } from "./providers";
 import { pruneTurns } from "./turn-log";
-import { verifyTurnstile } from "./turnstile";
+import { turnstileBroken, verifyTurnstile } from "./turnstile";
+import { clientIp } from "./visitor";
+import { watch } from "./watch";
+import { weeklySummary } from "./weekly";
 
 export { Conversation } from "./conversation";
 
@@ -18,37 +24,48 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 
 const notAllowed = (allow: string) => json({ error: "method_not_allowed" }, 405, { allow });
 
-const clientIp = (request: Request) => request.headers.get("cf-connecting-ip") ?? "unknown";
 const log = (level: "info" | "warn" | "error", line: string) => console[level](line);
 const rateLimited = () => json({ error: "rate_limited" }, 429, { "retry-after": "60" });
 
 /**
  * Mints a conversation and its token for a visitor who passed Turnstile. Rate limited per client
- * IP. Without a Turnstile secret it refuses everyone rather than skipping the check. `resting`
- * tells the client the day's shared turns are already used (or the ledger cannot be read, which
- * fails closed), so it can show the static card.
+ * IP. Without a Turnstile secret, IP_HASH_KEY or (outside demo mode) MINIMAX_API_KEY it refuses
+ * everyone rather than skipping a check or serving scripted replies.
+ * `resting` says why the assistant rests for this visitor (the day's shared turns used, this visitor's
+ * own used, or the ledger unreadable, which fails closed), or null; the client shows the static card. `mode` is "text" instead of "voice" while
+ * voice rests for the day (its audio or speech ceiling, or this visitor's own audio seconds), so the client starts in text.
+ * Two alerts ride on it, each kept alive with `ctx.waitUntil` so the visitor never waits: `voice_resting`
+ * when voice rests (it checks the shared day itself, so a visitor who only used up their own raises
+ * nothing), and `visitors_blocked` when Turnstile fails on our side, which the hourly check cannot
+ * see because it skips Turnstile. A visitor's own bad or expired token raises nothing.
  */
-async function createSession(request: Request, env: Env): Promise<Response> {
-  if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
+async function createSession(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (env.ASSISTANT_MODE === "off") return json({ error: "off" }, 503);
   const { success } = await env.RL_SESSION.limit({ key: clientIp(request) });
   if (!success) return rateLimited();
   const body = await readJson(request, SessionRequestSchema);
   if (!body) return json({ error: "bad_request" }, 400);
   const secret = env.TURNSTILE_SECRET?.trim();
   if (!secret) return json({ error: "turnstile_not_configured" }, 503);
+  if (missingConfig(env).required.length > 0) return json({ error: "not_configured" }, 503);
   const check = await verifyTurnstile({ token: body.turnstile, secret, ip: request.headers.get("cf-connecting-ip") });
   if (!check.ok) {
-    console.warn(`turnstile refused: ${check.codes.join(", ") || "no codes"}`);
+    const codes = check.codes.join(", ") || "no codes";
+    console.warn(`turnstile refused: ${codes}`);
+    if (turnstileBroken(check.codes)) ctx.waitUntil(raiseAlert(env, "visitors_blocked", `turnstile: ${codes}`, log));
     return json({ error: "turnstile_failed" }, 403);
   }
 
   const { token, conversationId, secretHash } = mintToken();
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  const [, resting] = await Promise.all([
+  const [, resting, voiceResting] = await Promise.all([
     secretHash.then((hash) => env.CONVERSATION.get(env.CONVERSATION.idFromName(conversationId)).init(hash, expiresAt)),
-    restingToday(env, log),
+    restingReason(env, clientIp(request), log),
+    env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, clientIp(request), log),
   ]);
-  const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE, expiresAt, resting };
+  if (voiceResting) ctx.waitUntil(reportVoiceUsedUp(env, log));
+  const mode = voiceResting ? "text" : env.ASSISTANT_MODE;
+  const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode, expiresAt, resting };
   return json(session);
 }
 
@@ -74,7 +91,7 @@ async function openVoice(request: Request, env: Env): Promise<Response> {
  * key, for the same reason as openVoice.
  */
 async function chat(request: Request, env: Env): Promise<Response> {
-  if (env.ASSISTANT_MODE === "off") return json({ mode: "off" }, 503);
+  if (env.ASSISTANT_MODE === "off") return json({ error: "off" }, 503);
   const parsed = parseToken(tokenFromAuthorization(request.headers.get("Authorization")) ?? "");
   if (!parsed) return json({ error: "auth" }, 401);
   const { success } = await env.RL_SESSION.limit({ key: `chat:${clientIp(request)}` });
@@ -82,53 +99,77 @@ async function chat(request: Request, env: Env): Promise<Response> {
   return env.CONVERSATION.get(env.CONVERSATION.idFromName(parsed.conversationId)).fetch(request);
 }
 
+/**
+ * The design document, one copy in docs/design/, bundled into the Worker as text (Vite's `?raw`) so
+ * it needs no second copy among the assets. Public on purpose; the hour of caching keeps a share of
+ * the link from reaching the Worker each time.
+ */
+const blueprintPage = () =>
+  new Response(blueprint, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=3600" },
+  });
+
 /** Deletes what is past its retention; logs the counts, or why it failed. */
 async function prune(db: D1Database, now: number): Promise<void> {
   try {
-    const [turns, days] = await Promise.all([pruneTurns(db, now), pruneDays(db, now)]);
-    console.info(`retention: deleted ${turns} turns and ${days} daily counts`);
+    const [turns, gaps, days, visitors] = await Promise.all([
+      pruneTurns(db, now),
+      pruneGaps(db, now),
+      pruneDays(db, now),
+      pruneVisitors(db, now),
+    ]);
+    console.info(`retention: deleted ${turns} turns, ${gaps} gaps, ${days} daily counts and ${visitors} visitor counts`);
   } catch (err) {
     console.error(`retention failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
+/**
+ * Readiness: `missing` lists the names (never values) of required and optional config, and `ok` is
+ * false (503) when anything required is missing. 500 when the providers cannot be built for another
+ * reason, such as an LLM_PROFILE not cleared for visitors.
+ */
 function health(env: Env): Response {
-  const base = { protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE };
+  const missing = missingConfig(env);
+  const base = { protocol: PROTOCOL_VERSION, mode: env.ASSISTANT_MODE, demo: demoMode(env), missing };
   try {
-    return json({ ok: true, ...base, providers: buildProviders(env).label });
+    const providers = buildProviders(env).label;
+    const ok = missing.required.length === 0;
+    return json({ ok, ...base, providers }, ok ? 200 : 503);
   } catch (err) {
+    if (err instanceof NotConfiguredError) return json({ ok: false, ...base }, 503);
     return json({ ok: false, ...base, error: err instanceof Error ? err.message : String(err) }, 500);
   }
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const { pathname } = new URL(request.url);
     switch (pathname) {
       case "/assistant/session":
-        return request.method === "POST" ? createSession(request, env) : notAllowed("POST");
+        return request.method === "POST" ? createSession(request, env, ctx) : notAllowed("POST");
       case "/assistant/chat":
         return request.method === "POST" ? chat(request, env) : notAllowed("POST");
       case "/assistant/voice":
         return request.method === "GET" ? openVoice(request, env) : notAllowed("GET");
       case "/assistant/health":
         return request.method === "GET" ? health(env) : notAllowed("GET");
+      case "/assistant/blueprint":
+        return request.method === "GET" ? blueprintPage() : notAllowed("GET");
     }
     if (pathname === "/assistant" || pathname.startsWith("/assistant/")) return json({ error: "not_found" }, 404);
     return env.ASSETS.fetch(request);
   },
 
   /**
-   * Hourly (cron in wrangler.jsonc): the canary, which logs only its outcome, never answer text;
-   * and retention, which deletes turn log rows after 30 days and daily counts after 7.
+   * Hourly (cron in wrangler.jsonc): the canary and its alerts (watch.ts), which log only outcomes,
+   * never answer text; and retention, which deletes turn log and gap rows after 30 days, daily
+   * counts (the alert claims too) after 7, and per-visitor counts once their UTC day is over. On
+   * Mondays from 03:00 UTC it also emails the weekly summary (weekly.ts).
    */
   scheduled(_controller, env, ctx): void {
-    ctx.waitUntil(
-      runCanary(env).then((r) => {
-        if (r.ok) console.info(`canary ok in ${r.ms} ms`);
-        else console.error(`canary failed: ${r.reason}`);
-      }),
-    );
+    ctx.waitUntil(watch(env));
+    ctx.waitUntil(weeklySummary(env, log));
     ctx.waitUntil(prune(env.DB, Date.now()));
   },
 } satisfies ExportedHandler<Env>;

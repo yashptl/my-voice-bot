@@ -139,6 +139,28 @@ describe("withDeadlines", () => {
   });
 });
 
+describe("withDeadlines timeouts", () => {
+  it("name the deadline that was missed", async () => {
+    const idle = scripted(async function* () {
+      yield { t: "reasoning" };
+      await never();
+    });
+    const idled = drain(guard(idle.llm));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await idled).error).toMatchObject({ kind: "timeout", deadline: "idle" });
+
+    const trickle = scripted(async function* () {
+      for (;;) {
+        await sleep(5_000);
+        yield { t: "reasoning" };
+      }
+    });
+    const slow = drain(guard(trickle.llm));
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect((await slow).error).toMatchObject({ kind: "timeout", deadline: "total" });
+  });
+});
+
 describe("withDeadlines retry", () => {
   /** Attempt n (from 0) runs `failures[n]` after its reasoning tick, which throws; the others answer. */
   function flaky(failures: Record<number, () => Promise<void>>) {
@@ -192,7 +214,7 @@ describe("withDeadlines retry", () => {
   });
 
   it("does not retry other failures", async () => {
-    for (const kind of ["auth", "bad_request", "network", "empty", "unknown"] as const) {
+    for (const kind of ["auth", "quota", "bad_request", "network", "empty", "unknown"] as const) {
       const h = flaky({ 0: refuse(kind) });
       const { error } = await drain(guard(h.llm));
       expect((error as LlmError).kind).toBe(kind);

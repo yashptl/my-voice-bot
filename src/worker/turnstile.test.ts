@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SITEVERIFY_URL, verifyTurnstile } from "./turnstile";
+import { SITEVERIFY_URL, turnstileBroken, verifyTurnstile } from "./turnstile";
 
 const TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
 const SECRET = "1x0000000000000000000000000000000AA"; // Cloudflare's published always-pass test secret
@@ -90,5 +90,24 @@ describe("verifyTurnstile", () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(await result).toEqual({ ok: false, codes: ["timeout"] });
     expect(f.requests[0]?.signal.aborted).toBe(true);
+  });
+});
+
+describe("turnstileBroken", () => {
+  it("is false when every code comes from the visitor's own token", () => {
+    expect(turnstileBroken(["missing-input-response"])).toBe(false);
+    expect(turnstileBroken(["invalid-input-response"])).toBe(false);
+    expect(turnstileBroken(["timeout-or-duplicate"])).toBe(false);
+    expect(turnstileBroken(["invalid-input-response", "timeout-or-duplicate"])).toBe(false);
+  });
+
+  it("is true for no codes at all, and for any code that is not the visitor's", () => {
+    expect(turnstileBroken([])).toBe(true);
+    expect(turnstileBroken(["invalid-input-secret"])).toBe(true);
+    expect(turnstileBroken(["timeout"])).toBe(true);
+    expect(turnstileBroken(["network-error"])).toBe(true);
+    expect(turnstileBroken(["http-500"])).toBe(true);
+    expect(turnstileBroken(["bad-response"])).toBe(true);
+    expect(turnstileBroken(["invalid-input-response", "internal-error"])).toBe(true);
   });
 });

@@ -345,6 +345,84 @@ describe("createAnthropicCompatibleLlm: errors", () => {
     expect(error).toMatchObject({ kind, status });
   });
 
+  describe("MiniMax codes", () => {
+    const json = { "content-type": "application/json" };
+    const failWith = async (body: unknown, status = 200) => {
+      const { llm } = llmFor(() => new Response(JSON.stringify(body), { status, headers: json }));
+      return (await drain(llm)).error;
+    };
+
+    it.each([1008, 2053, 2056, 2067])("code %i is quota", async (code) => {
+      expect(await failWith({ base_resp: { status_code: code, status_msg: "x" } }, 500)).toMatchObject({ kind: "quota", code });
+    });
+
+    it.each([1004, 2049])("code %i is auth", async (code) => {
+      expect(await failWith({ base_resp: { status_code: code, status_msg: "x" } }, 500)).toMatchObject({ kind: "auth", code });
+    });
+
+    it.each([2062, 1002])("code %i stays rate_limit", async (code) => {
+      expect(await failWith({ base_resp: { status_code: code, status_msg: "x" } }, 429)).toMatchObject({ kind: "rate_limit", code });
+    });
+
+    it("a provider code wins over the HTTP status", async () => {
+      expect(await failWith({ base_resp: { status_code: 2056, status_msg: "x" } }, 429)).toMatchObject({
+        kind: "quota",
+        status: 429,
+        code: 2056,
+      });
+    });
+
+    it("finds the code in base_resp.status_code, error.code and a top-level code, as a number or a numeric string", async () => {
+      expect(await failWith({ base_resp: { status_code: "2056" } }, 500)).toMatchObject({ kind: "quota", code: 2056 });
+      expect(await failWith({ error: { type: "api_error", code: 2049, message: "x" } }, 500)).toMatchObject({ kind: "auth", code: 2049 });
+      expect(await failWith({ error: { code: "1008", message: "x" } }, 500)).toMatchObject({ kind: "quota", code: 1008 });
+      expect(await failWith({ code: 1004, message: "x" }, 500)).toMatchObject({ kind: "auth", code: 1004 });
+    });
+
+    it("finds a listed code standing alone in the error message, as a last resort", async () => {
+      expect(await failWith({ error: { type: "api_error", message: "request failed (2056)" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+      expect(await failWith({ error: { type: "api_error", message: "order 120567 failed" } }, 500)).toMatchObject({ kind: "unknown" });
+    });
+
+    it("prefers a listed code in a later place over a zero or unlisted one in an earlier place", async () => {
+      expect(await failWith({ base_resp: { status_code: 0 }, error: { code: 2056, message: "x" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+      expect(await failWith({ error: { type: "api_error", code: 429, message: "Please retry your request. (2056)" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+    });
+
+    it("reads the code a real MiniMax failure put in parentheses at the end of its message", async () => {
+      expect(await failWith({ error: { type: "api_error", message: "Internal server error. Please retry your request. (2056)" } }, 500)).toMatchObject({
+        kind: "quota",
+        code: 2056,
+      });
+      expect(await failWith({ error: { type: "api_error", message: "Internal server error. Please retry your request. (500)" } }, 500)).toMatchObject({
+        kind: "unknown",
+      });
+    });
+
+    it("a body with no recognised code keeps the status-based kind", async () => {
+      expect(await failWith({ base_resp: { status_code: 9999 } }, 429)).toMatchObject({ kind: "rate_limit", code: 9999 });
+      expect(await failWith({ error: { type: "api_error", message: "x" } }, 500)).toMatchObject({ kind: "unknown" });
+    });
+
+    it("an error event inside the stream is classified the same way", async () => {
+      const { llm } = llmFor(
+        sseResponse([messageStart(), ["error", { type: "error", error: { type: "api_error", code: 2056, message: "x" } }]]),
+      );
+      expect((await drain(llm)).error).toMatchObject({ kind: "quota", code: 2056 });
+      const viaBase = llmFor(sseResponse([messageStart(), ["error", { type: "error", base_resp: { status_code: 1004 } }]]));
+      expect((await drain(viaBase.llm)).error).toMatchObject({ kind: "auth", code: 1004 });
+    });
+  });
+
   it("HTTP 400 is bad_request carrying the provider's message", async () => {
     const { llm } = llmFor(
       () =>

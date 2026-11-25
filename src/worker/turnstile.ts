@@ -8,6 +8,17 @@ export interface TurnstileCheck {
   codes: string[];
 }
 
+/** The codes siteverify gives for a visitor's own token: missing, bad, or already used or expired. */
+const VISITOR_CODES = new Set(["missing-input-response", "invalid-input-response", "timeout-or-duplicate"]);
+
+/**
+ * Whether a failed check says our side is broken (a wrong secret, siteverify down, a changed reply)
+ * rather than the visitor's token. True for no codes, and for any code that is not the visitor's.
+ */
+export function turnstileBroken(codes: string[]): boolean {
+  return codes.length === 0 || codes.some((c) => !VISITOR_CODES.has(c));
+}
+
 /**
  * Checks a Turnstile token with siteverify. Fails closed: a timeout, a network error or a reply that
  * is not a clear `success: true` is `ok: false`, so a visitor is never let in on an unverified token.

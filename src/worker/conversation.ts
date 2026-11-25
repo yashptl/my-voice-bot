@@ -3,19 +3,24 @@ import type { z } from "zod";
 import bundle from "../../knowledge/bundle.json" with { type: "json" };
 import { buildStable, promptHash } from "../core/prompt";
 import { sanitizeInput } from "../core/sanitize";
-import { ChatRequestSchema, MAX_BODY_BYTES, tokenFromAuthorization } from "../protocol/chat";
+import { ChatRequestSchema, tokenFromAuthorization } from "../protocol/chat";
 import { parseClientMessage, type ServerEvent } from "../protocol/events";
+import { MAX_BODY_BYTES, turnsFor } from "../protocol/limits";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { WS_SUBPROTOCOL } from "../protocol/version";
 import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
+import { raiseAlert, reportOutage, reportVoiceUsedUp } from "./alerts";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
-import { spendTurn } from "./ledger";
+import { recordGap, type Gap } from "./gap-log";
+import { admitTurn, AUDIO_BLOCK_SECONDS, release, releaseAudio, reserve, reserveAudio, voiceUnitResting, type TurnSpend } from "./ledger";
 import { buildProviders } from "./providers";
 import { textTurn } from "./text-turn";
 import { recordTurn, type TurnSource } from "./turn-log";
-import { VOICE_IDLE_CLOSE_MS, VoiceLoop } from "./voice-loop";
+import { OUTAGE_ERRORS } from "./turn-failure";
+import { clientIp } from "./visitor";
+import { VOICE_IDLE_CLOSE_MS, VOICE_RESTING_MESSAGE, VoiceLoop } from "./voice-loop";
 
 /** Client JSON messages are tiny; anything bigger is refused without parsing. */
 const MAX_TEXT_FRAME = 4096;
@@ -73,11 +78,13 @@ async function readCapped(request: Request, max: number): Promise<Uint8Array | n
 /**
  * One conversation. Holds the token's secret hash, expiry and source (from `init`) and the
  * ConversationState (meter, turn count, history) that voice sockets and text answers share. Voice:
- * one socket at a time, a new one replaces the old; turn logic lives in VoiceLoop. Text:
- * `POST /assistant/chat` streams one answer at a time as server-sent events (textTurn). Every
- * answer first spends one of the day's shared turns (ledger.ts), and once it ends its TurnRecord
- * goes to the turn log in D1 (turn-log.ts). A storage alarm deletes everything RETENTION_MS after
- * the session expires.
+ * one socket at a time, a new one replaces the old; turn logic lives in VoiceLoop, and the socket
+ * closes when the session expires. Text: `POST /assistant/chat` streams one answer at a time as
+ * server-sent events (textTurn). Every answer first spends one of the visitor's and one of the
+ * day's shared turns (ledger.ts), the visitor being the client IP of the request (for voice, of the
+ * upgrade); once it ends its TurnRecord goes to the turn log in D1 (turn-log.ts), and a question the
+ * knowledge only partly covered goes to the gap log (gap-log.ts). A storage alarm
+ * deletes everything RETENTION_MS after the session expires.
  */
 export class Conversation extends DurableObject<Env> {
   private state: Promise<ConversationState> | null = null;
@@ -106,17 +113,21 @@ export class Conversation extends DurableObject<Env> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     }
-    const conversationId = await this.authorize(tokenFromProtocols(request.headers.get("Sec-WebSocket-Protocol")));
-    if (!conversationId) return new Response("Unauthorized", { status: 401 });
+    const session = await this.authorize(tokenFromProtocols(request.headers.get("Sec-WebSocket-Protocol")));
+    if (!session) return new Response("Unauthorized", { status: 401 });
 
+    const { conversationId, expiresAt } = session;
     const log = logFor(conversationId);
+    const ip = clientIp(request);
     const providers = buildProviders(this.env);
     const state = await this.loadState(log);
+    const audio = await this.reserveFirstAudio(ip, log);
     const pair = new WebSocketPair();
     const client = pair[0];
     const socket = pair[1];
     socket.binaryType = "arraybuffer";
     socket.accept();
+    const upgraded = new Response(null, { status: 101, webSocket: client, headers: { "Sec-WebSocket-Protocol": WS_SUBPROTOCOL } });
 
     const send = (e: ServerEvent | ArrayBuffer) => {
       try {
@@ -125,6 +136,13 @@ export class Conversation extends DurableObject<Env> {
         // The socket is closing; its close event cleans up.
       }
     };
+    if (!audio) {
+      this.voiceRefused(log);
+      // Voice rests for the day. Accepted first and told why: a browser hides a refused upgrade's status.
+      send({ type: "error", code: "voice_resting", message: VOICE_RESTING_MESSAGE });
+      closeQuietly(socket, 1008, "voice resting");
+      return upgraded;
+    }
     const loop = new VoiceLoop({
       conversationId,
       stt: providers.stt,
@@ -135,11 +153,25 @@ export class Conversation extends DurableObject<Env> {
       send,
       now: () => Date.now(),
       state,
-      spendTurn: () => spendTurn(this.env, log),
+      ledger: {
+        spendTurn: async () => admitTurn(this.env, ip, log, { skipOutage: await this.isCanary() }),
+        // Mic seconds are charged to the visitor as well as to everyone (ledger.ts reserveAudio).
+        reserve: async (unit, n) => {
+          const day = await (unit === "voice_seconds" ? reserveAudio(this.env, ip, n, log) : reserve(this.env, unit, n, log));
+          if (day === null) this.voiceRefused(log);
+          return day;
+        },
+        release: (unit, n, day) =>
+          void (unit === "voice_seconds" ? releaseAudio(this.env, ip, n, day, log) : release(this.env, unit, n, day, log)),
+      },
+      audioReserved: audio,
+      expiresAt,
       closeSocket: (code, reason) => closeQuietly(socket, code, reason),
       idleCloseMs: VOICE_IDLE_CLOSE_MS,
       log,
       onRecord: (record) => this.logTurn(record, log),
+      onGap: (gap) => this.logGap(gap, conversationId, log),
+      onVoiceFailure: (reason) => this.alert("voice_failed", reason, log),
     });
 
     const previous = this.live;
@@ -170,20 +202,44 @@ export class Conversation extends DurableObject<Env> {
       closeQuietly(socket, 1011, "start failed");
     });
 
-    return new Response(null, { status: 101, webSocket: client, headers: { "Sec-WebSocket-Protocol": WS_SUBPROTOCOL } });
+    return upgraded;
+  }
+
+  /**
+   * The socket's first block of the day's mic audio, reserved before it is accepted. Null when voice
+   * rests for the day: no block left, for everyone or for this visitor, or not one reply's speech
+   * (or the database fails: fails closed).
+   */
+  private async reserveFirstAudio(ip: string, log: Log): Promise<{ day: string; seconds: number } | null> {
+    const [day, speechResting] = await Promise.all([
+      reserveAudio(this.env, ip, AUDIO_BLOCK_SECONDS, log),
+      voiceUnitResting(this.env, "tts_chars", log),
+    ]);
+    if (day === null) return null;
+    if (!speechResting) return { day, seconds: AUDIO_BLOCK_SECONDS };
+    await releaseAudio(this.env, ip, AUDIO_BLOCK_SECONDS, day, log);
+    return null;
   }
 
   /**
    * One text answer, streamed as server-sent events. Checks in order: token (401), body (400), an
-   * answer already streaming (409), the conversation's turns (429), the day's shared turns (503).
+   * answer already streaming (409), the conversation's turns (429 `limit`), then the day's turns
+   * (503 `resting` with a `reason`: `visitor` for this visitor's own, `ceiling` for everyone's,
+   * `outage` when the ledger fails). A message over LONG_MESSAGE_CHARS counts as three turns in
+   * each. The conversation's turns are counted first,
+   * with no await between check and count, so a voice turn on the same conversation cannot take the
+   * last one too; a refused spend gives it back.
    * The answer stops, and stops costing, when the visitor aborts the request or the response
    * stream is cancelled; history then keeps only the sentences already sent.
    */
   private async chat(request: Request): Promise<Response> {
-    const conversationId = await this.authorize(tokenFromAuthorization(request.headers.get("Authorization")));
-    if (!conversationId) return json({ error: "auth" }, 401);
+    const session = await this.authorize(tokenFromAuthorization(request.headers.get("Authorization")));
+    if (!session) return json({ error: "auth" }, 401);
+    const { conversationId } = session;
     const body = await readJson(request, ChatRequestSchema);
-    if (!body || !sanitizeInput(body.message).trim()) return json({ error: "bad_request" }, 400);
+    // What the model will see, so the count below is of the same text.
+    const message = body ? sanitizeInput(body.message).trim() : "";
+    if (!message) return json({ error: "bad_request" }, 400);
     // Set before the next await, so a double send cannot slip in while this one is checked.
     if (this.answering) return json({ error: "busy" }, 409);
     this.answering = true;
@@ -193,8 +249,20 @@ export class Conversation extends DurableObject<Env> {
       const providers = buildProviders(this.env);
       const hash = await (this.hash ??= promptHash(buildStable(bundle)));
       const state = await this.loadState(log);
-      if (!state.startTurn()) return json({ error: "limit" }, 429);
-      if (!(await spendTurn(this.env, log))) return json({ error: "resting" }, 503);
+      const turns = turnsFor(message);
+      if (!state.startTurn(turns)) return json({ error: "limit" }, 429);
+      // Whatever makes the spend throw, the turn is undone and the visitor hears an outage, not a 500.
+      // The canary read is inside the guard too: a storage failure there is the same outage.
+      const spent = await this.isCanary()
+        .then((canary) => admitTurn(this.env, clientIp(request), log, { skipOutage: canary, turns }))
+        .catch((err: unknown): TurnSpend => {
+          log("error", `spend failed: ${err instanceof Error ? err.message : String(err)}`);
+          return "outage";
+        });
+      if (spent !== "ok") {
+        state.undoTurn(turns);
+        return json({ error: "resting", reason: spent }, 503);
+      }
 
       const stop = new AbortController();
       const events = textTurn({
@@ -204,11 +272,12 @@ export class Conversation extends DurableObject<Env> {
         bundle,
         promptHash: hash,
         state,
-        message: body.message,
+        message,
         signal: AbortSignal.any([request.signal, stop.signal]),
         now: () => Date.now(),
         log,
         onRecord: (record) => this.logTurn(record, log),
+        onGap: (gap) => this.logGap(gap, conversationId, log),
       });
       const encoder = new TextEncoder();
       // Pushed, not pulled: the turn runs to its end (or its deadline) whatever the reader does,
@@ -241,8 +310,10 @@ export class Conversation extends DurableObject<Env> {
         cancel: () => stop.abort(),
       });
       streaming = true;
+      // no-transform: a proxy in front (a dev rewrite, a CDN) must not compress the stream, or it
+      // holds every sentence until the answer ends.
       return new Response(stream, {
-        headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" },
+        headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform" },
       });
     } finally {
       if (!streaming) this.answering = false;
@@ -252,26 +323,76 @@ export class Conversation extends DurableObject<Env> {
   /**
    * Writes a finished turn's record to the turn log without waiting for it, so the visitor's stream
    * is never held up. A failure is logged (the record holds no visitor text) and the turn stands.
+   * A failed answer also reaches the owner: a failure that will not mend itself rests the assistant
+   * for everyone (reportOutage), any other raises `answer_failed` with the record's error code. Not
+   * raised: a turn the visitor cut short, a speech failure (`voice_failed` covers it) and, apart from
+   * an outage, the canary's turn (the hourly check judges that).
    */
   private logTurn(record: TurnRecord, log: Log): void {
     const at = Date.now();
     void (async () => {
-      const source: TurnSource = (await this.ctx.storage.get("source")) === "canary" ? "canary" : "visitor";
+      const source: TurnSource = (await this.isCanary()) ? "canary" : "visitor";
       await recordTurn(this.env.DB, record, at, source);
     })().catch((err: unknown) => {
       log("error", `turn log failed: ${err instanceof Error ? err.message : String(err)}`);
     });
+    const error = record.error;
+    if (error === null || record.interrupted) return;
+    if (OUTAGE_ERRORS.has(error)) {
+      this.ctx.waitUntil(reportOutage(this.env, error, log, at));
+    } else if (error !== "tts_failed" && error !== "tts_timeout") {
+      this.ctx.waitUntil(
+        this.isCanary().then(
+          (canary) => (canary ? undefined : raiseAlert(this.env, "answer_failed", error, log, at)),
+          (err: unknown) => log("error", `answer alert failed: ${err instanceof Error ? err.message : String(err)}`),
+        ),
+      );
+    }
   }
 
-  /** The conversation id when the token's secret matches and the session has not expired. */
-  private async authorize(token: string | null): Promise<string | null> {
+  /** An alert raised from a visitor's conversation, kept alive past the response; raiseAlert reports its own failures. */
+  private alert(kind: "voice_failed", reason: string, log: Log): void {
+    this.ctx.waitUntil(raiseAlert(this.env, kind, reason, log));
+  }
+
+  /**
+   * A voice reservation was refused: raises `voice_resting` if the day's shared seconds or characters
+   * are what ran out, kept alive past the response. A visitor who only used up their own raises
+   * nothing, and a failed read is not taken for a used-up day (reportVoiceUsedUp).
+   */
+  private voiceRefused(log: Log): void {
+    this.ctx.waitUntil(reportVoiceUsedUp(this.env, log));
+  }
+
+  /** Whether this is the canary's conversation: it is admitted through an outage, to learn when the provider is back. */
+  private async isCanary(): Promise<boolean> {
+    return (await this.ctx.storage.get("source")) === "canary";
+  }
+
+  /**
+   * Writes a gap (a question the knowledge only partly covered) to the gap log without waiting for
+   * it, like logTurn. Not for the canary's conversation. The row holds the visitor's question, so a
+   * failure is logged without it.
+   */
+  private logGap(gap: Gap, conversationId: string, log: Log): void {
+    const at = Date.now();
+    void (async () => {
+      if (await this.isCanary()) return;
+      await recordGap(this.env.DB, { ...gap, conversationId }, at);
+    })().catch((err: unknown) => {
+      log("error", `gap log failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /** The conversation id and session expiry when the token's secret matches and the session has not expired. */
+  private async authorize(token: string | null): Promise<{ conversationId: string; expiresAt: number } | null> {
     const parsed = parseToken(token ?? "");
     if (!parsed) return null;
     const stored = await this.ctx.storage.get(["secretHash", "expiresAt"]);
     const secretHash = stored.get("secretHash");
     const expiresAt = stored.get("expiresAt");
     if (typeof secretHash !== "string" || typeof expiresAt !== "number" || Date.now() >= expiresAt) return null;
-    return (await verifySecret(parsed.secret, secretHash)) ? parsed.conversationId : null;
+    return (await verifySecret(parsed.secret, secretHash)) ? { conversationId: parsed.conversationId, expiresAt } : null;
   }
 
   /** Loaded once per object and shared by every socket; a failed load is retried by the next socket. */

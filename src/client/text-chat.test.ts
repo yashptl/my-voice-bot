@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ServerEvent } from "../protocol/events";
 import { encodeSse, SSE_KEEPALIVE } from "../protocol/sse";
 import { PROTOCOL_VERSION } from "../protocol/version";
-import { AssistantHttpError, ask, startSession } from "./text-chat";
+import { AssistantHttpError, ask, OutdatedError, startSession } from "./text-chat";
 
 const BASE = "https://yashos.dev/assistant";
 
@@ -59,7 +59,7 @@ function fakeFetch(respond: () => Response) {
 }
 
 describe("startSession", () => {
-  const session = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "text", expiresAt: 1_800_000, resting: false };
+  const session = { token: "c1.s1", protocol: PROTOCOL_VERSION, mode: "text", expiresAt: 1_800_000, resting: null };
 
   it("posts the Turnstile token to <baseUrl>/session and returns the session", async () => {
     const fetch = fakeFetch(() => Response.json(session));
@@ -73,7 +73,7 @@ describe("startSession", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ turnstile: "XXXX.DUMMY.TOKEN.XXXX" });
   });
 
-  it("maps a failed check to an HTTP error and an off assistant to resting", async () => {
+  it("maps a failed check to an HTTP error and an off assistant to off", async () => {
     const failed = startSession({
       baseUrl: BASE,
       turnstile: "x",
@@ -83,16 +83,24 @@ describe("startSession", () => {
     const off = startSession({
       baseUrl: BASE,
       turnstile: "x",
-      fetch: fakeFetch(() => Response.json({ mode: "off" }, { status: 503 })),
+      fetch: fakeFetch(() => Response.json({ error: "off" }, { status: 503 })),
     });
-    await expect(off).rejects.toMatchObject({ status: 503, code: "resting" });
+    await expect(off).rejects.toMatchObject({ status: 503, code: "off", reason: null });
   });
 
   it("refuses a malformed reply or another protocol version", async () => {
     const malformed = fakeFetch(() => Response.json({ token: "c1.s1" }));
     await expect(startSession({ baseUrl: BASE, turnstile: "x", fetch: malformed })).rejects.toThrow(/malformed/);
-    const newer = fakeFetch(() => Response.json({ ...session, protocol: PROTOCOL_VERSION + 1 }));
-    await expect(startSession({ baseUrl: BASE, turnstile: "x", fetch: newer })).rejects.toThrow(/protocol/);
+  });
+
+  it("throws OutdatedError, with the server's version, for another protocol version", async () => {
+    const newer = fakeFetch(() => Response.json({ ...session, protocol: 3 }));
+    const err: unknown = await startSession({ baseUrl: BASE, turnstile: "x", fetch: newer }).catch((e) => e);
+    expect(err).toBeInstanceOf(OutdatedError);
+    expect(err).toMatchObject({ server: 3 });
+    // An older server's reply has a different shape; the version still decides.
+    const older = fakeFetch(() => Response.json({ ...session, protocol: 1, resting: false }));
+    await expect(startSession({ baseUrl: BASE, turnstile: "x", fetch: older })).rejects.toBeInstanceOf(OutdatedError);
   });
 });
 
@@ -122,13 +130,25 @@ describe("ask", () => {
     [401, { error: "auth" }, "auth"],
     [429, { error: "rate_limited" }, "rate_limited"],
     [400, { error: "bad_request" }, "bad_request"],
-    [503, { mode: "off" }, "resting"],
+    [503, { error: "off" }, "off"],
     [418, { error: "teapot" }, "unknown"],
   ] as const)("maps HTTP %i %j to %s", async (status, json, code) => {
     const fetch = fakeFetch(() => Response.json(json, { status }));
     const err: unknown = await ask({ baseUrl: BASE, token: "t", message: "hi", onEvent: () => {}, fetch }).catch((e) => e);
     expect(err).toBeInstanceOf(AssistantHttpError);
     expect(err).toMatchObject({ status, code });
+  });
+
+  it.each([
+    [{ error: "resting", reason: "visitor" }, "visitor"],
+    [{ error: "resting", reason: "ceiling" }, "ceiling"],
+    [{ error: "resting", reason: "outage" }, "outage"],
+    [{ error: "resting" }, "outage"],
+    [{ error: "resting", reason: "whatever" }, "outage"],
+  ] as const)("maps 503 %j to resting with reason %s", async (json, reason) => {
+    const fetch = fakeFetch(() => Response.json(json, { status: 503 }));
+    const err: unknown = await ask({ baseUrl: BASE, token: "t", message: "hi", onEvent: () => {}, fetch }).catch((e) => e);
+    expect(err).toMatchObject({ status: 503, code: "resting", reason });
   });
 
   it("maps a reply that is not JSON to unknown", async () => {

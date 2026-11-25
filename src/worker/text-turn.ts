@@ -3,12 +3,14 @@ import { GateTally } from "../core/output-gate";
 import { respond, type RespondEvent } from "../core/respond";
 import { sanitizeInput } from "../core/sanitize";
 import type { Bundle } from "../knowledge/types";
-import { LlmError, type LlmPort, type LlmUsage } from "../ports/llm";
+import type { LlmPort, LlmUsage } from "../ports/llm";
 import type { DataLine, DataLineStatus } from "../protocol/data-line";
 import type { ServerEvent, Source } from "../protocol/events";
 import type { Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
 import type { ConversationState, Log } from "./conversation-state";
+import type { Gap } from "./gap-log";
+import { turnFailure } from "./turn-failure";
 import { LLM_IDLE_MS, LLM_TOTAL_MS, withDeadlines } from "./deadlines";
 
 export interface TextTurnOptions {
@@ -32,6 +34,12 @@ export interface TextTurnOptions {
    * carries, or, when the turn is stopped (and sends nothing more), one marked interrupted.
    */
   onRecord?(record: TurnRecord): void;
+  /**
+   * Called once, when the reply's data line parsed with coverage adjacent or none (the pressed-answer
+   * rule's filled-in line included), for the gap log. It carries the visitor's question, so the
+   * caller must never log it to the console.
+   */
+  onGap?(gap: Gap): void;
 }
 
 /** The cited refs in order, each with the title its chip shows (the ref itself when untitled). */
@@ -136,6 +144,7 @@ export async function* textTurn(o: TextTurnOptions): AsyncIterable<ServerEvent> 
             dataLine = ev.dataLine;
             if (ev.data) {
               coverage = ev.data.coverage;
+              if (ev.data.coverage !== "direct") o.onGap?.({ mode: "text", coverage: ev.data.coverage, refs: ev.data.refs, question });
               yield { type: "meta", turnId, data: ev.data, sources: sourcesOf(ev.data.refs, o.bundle) };
             } else if (ev.refs?.length) {
               yield { type: "sources", turnId, sources: sourcesOf(ev.refs, o.bundle) };
@@ -152,9 +161,12 @@ export async function* textTurn(o: TextTurnOptions): AsyncIterable<ServerEvent> 
       }
     } catch (err) {
       if (!signal.aborted) {
-        error = err instanceof LlmError ? `llm_${err.kind}` : "llm_failed";
-        o.log("error", `llm failed: ${err instanceof LlmError ? `${err.kind} ${err.status ?? ""}`.trim() : "unexpected error"}`);
-        yield { type: "error", code: "provider", message: "The assistant could not finish that answer. Please try again." };
+        const failure = turnFailure(err);
+        error = failure.record;
+        o.log("error", failure.logLine);
+        yield failure.reason
+          ? { type: "error", code: failure.code, message: failure.message, reason: failure.reason }
+          : { type: "error", code: failure.code, message: failure.message };
       }
     }
     if (signal.aborted) return; // stopped: the finally below keeps what was shown

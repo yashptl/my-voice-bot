@@ -36,6 +36,8 @@ export interface LlmPort {
 
 export type LlmErrorKind =
   | "auth"
+  /** The plan or credit is used up: like `auth`, it will not fix itself. */
+  | "quota"
   | "rate_limit"
   | "overloaded"
   | "bad_request"
@@ -47,11 +49,21 @@ export type LlmErrorKind =
 export class LlmError extends Error {
   readonly kind: LlmErrorKind;
   readonly status?: number;
+  /** Timeouts only: which deadline was missed, the whole answer's or the gap between chunks. */
+  readonly deadline?: "total" | "idle";
+  /** The provider's own numeric status code, when its reply carried one. */
+  readonly code?: number;
 
-  constructor(kind: LlmErrorKind, message: string, options: { status?: number; cause?: unknown } = {}) {
+  constructor(
+    kind: LlmErrorKind,
+    message: string,
+    options: { status?: number; deadline?: "total" | "idle"; code?: number; cause?: unknown } = {},
+  ) {
     super(message, { cause: options.cause });
     this.name = "LlmError";
     this.kind = kind;
     this.status = options.status;
+    this.deadline = options.deadline;
+    this.code = options.code;
   }
 }

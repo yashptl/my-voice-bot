@@ -8,11 +8,29 @@ export type AssistantMode = "voice" | "text" | "off";
 export type AssistantState = "listening" | "thinking" | "speaking" | "idle";
 
 /**
- * `limit`: this conversation used its questions or audio. `resting`: the day's shared ceiling is
- * reached, so the client shows the static card (pitch, resume, Messages) instead of the assistant.
- * `busy`: a text answer is still streaming in this conversation.
+ * Why the assistant rests: `ceiling`, the day's shared ceiling is reached; `visitor`, this visitor
+ * used their own daily allowance; `outage`, the ledger could not be read or spent (it fails closed).
  */
-export type ErrorCode = "rate_limited" | "auth" | "provider" | "limit" | "resting" | "busy" | "protocol" | "internal";
+export type RestingReason = "ceiling" | "visitor" | "outage";
+
+/**
+ * `limit`: this conversation used its questions or audio. `resting`: the assistant is resting for
+ * this visitor, and `reason` says why, so the client shows the static card (pitch, resume, Messages)
+ * instead of the assistant. `busy`: a text answer is still streaming in this conversation.
+ */
+export type ErrorCode =
+  | "rate_limited"
+  | "auth"
+  | "provider"
+  /** The model took too long: the answer's deadline or the gap between its chunks. */
+  | "timeout"
+  | "limit"
+  | "resting"
+  /** Voice only: the day's voice ceilings are reached. Answers continue as text; the socket closes. */
+  | "voice_resting"
+  | "busy"
+  | "protocol"
+  | "internal";
 
 /** A cited knowledge section, with the title the client shows on its chip. */
 export interface Source {
@@ -30,7 +48,12 @@ export type ServerEvent =
   | { type: "state"; state: AssistantState }
   | { type: "transcript"; turnIndex: number; text: string; final: boolean }
   | { type: "turn.start"; turnId: string; question: string }
-  | { type: "sentence"; turnId: string; id: number; text: string }
+  /**
+   * `spoken`, voice only: false when the sentence is shown but not spoken (the reply passed its
+   * spoken-character cap, or voice is resting for the day), so no audio follows for it. Absent in
+   * text mode and on sentences that are spoken.
+   */
+  | { type: "sentence"; turnId: string; id: number; text: string; spoken?: boolean }
   /** `sources` are `data.refs` in order, each with its bundle title. */
   | { type: "meta"; turnId: string; data: DataLine; sources: Source[] }
   /**
@@ -53,7 +76,7 @@ export type ServerEvent =
    */
   | { type: "stt"; status: "closed"; session: number; openForMs: number; idleMs: number | null }
   | { type: "stt"; status: "reopened"; session: number }
-  | { type: "error"; code: ErrorCode; message: string };
+  | { type: "error"; code: ErrorCode; message: string; reason?: RestingReason };
 
 const turnId = z.string().min(1).max(128);
 

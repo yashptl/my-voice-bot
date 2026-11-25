@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import bundle from "../../knowledge/bundle.json" with { type: "json" };
+import type { LlmRequest } from "../ports/llm";
 import { LLM_PROFILES } from "../adapters/llm-profiles";
 import { respond, type RespondEvent } from "../core/respond";
 import type { Env } from "./env";
-import { buildProviders, DEMO_REPLIES } from "./providers";
+import { buildProviders, DEMO_REPLIES, NotConfiguredError, visitorText } from "./providers";
 
 const KEY = "test-minimax-key-not-real";
 
@@ -23,7 +24,7 @@ function env(over: Partial<Env> = {}): Env {
 }
 
 async function answer(question: string) {
-  const { llm } = buildProviders(env());
+  const { llm } = buildProviders(env({ ASSISTANT_DEMO: "1" }));
   const events: RespondEvent[] = [];
   for await (const e of respond({ llm, bundle, history: [], message: question, mode: "voice" })) events.push(e);
   const meta = events.find((e) => e.type === "meta");
@@ -32,8 +33,8 @@ async function answer(question: string) {
 }
 
 describe("buildProviders", () => {
-  it("uses fakes for the LLM and TTS without keys, and Flux always", () => {
-    const p = buildProviders(env());
+  it("uses fakes for the LLM and TTS in demo mode without a key, and Flux always", () => {
+    const p = buildProviders(env({ ASSISTANT_DEMO: "1" }));
     expect([p.llm.id, p.tts.id, p.stt.id]).toEqual(["fake", "fake", "flux"]);
     expect(p.label).toBe("llm fake (demo replies), tts fake, stt flux");
   });
@@ -45,13 +46,23 @@ describe("buildProviders", () => {
   });
 
   it("gives the LLM profile's prices for the cost estimate, and none for the demo", () => {
-    expect(buildProviders(env()).prices).toBeNull();
+    expect(buildProviders(env({ ASSISTANT_DEMO: "1" })).prices).toBeNull();
     expect(buildProviders(env({ MINIMAX_API_KEY: KEY })).prices).toEqual(LLM_PROFILES["minimax-flash"].prices);
   });
 
   it("treats a blank key as no key", () => {
-    const p = buildProviders(env({ MINIMAX_API_KEY: "  " }));
+    const p = buildProviders(env({ MINIMAX_API_KEY: "  ", ASSISTANT_DEMO: "1" }));
     expect([p.llm.id, p.tts.id]).toEqual(["fake", "fake"]);
+  });
+
+  it("lets a key win over demo mode", () => {
+    const p = buildProviders(env({ MINIMAX_API_KEY: KEY, ASSISTANT_DEMO: "1" }));
+    expect([p.llm.model, p.tts.id]).toEqual(["MiniMax-M3.1-Flash", "minimax-speech"]);
+  });
+
+  it("is a configuration error without a key and without ASSISTANT_DEMO=1, never a silent demo", () => {
+    expect(() => buildProviders(env())).toThrow(NotConfiguredError);
+    expect(() => buildProviders(env({ MINIMAX_API_KEY: " ", ASSISTANT_DEMO: "true" }))).toThrow(NotConfiguredError);
   });
 
   it("refuses the Anthropic profile for visitors in Phase 0, with or without its key (probes only, see 0002)", () => {
@@ -99,6 +110,11 @@ describe("demo replies (no key)", () => {
     const { meta, prose } = await answer("Tell me a joke");
     expect(prose).toMatch(/demo mode/i);
     expect(meta).toMatchObject({ data: { refs: [], coverage: "none" }, error: null });
+  });
+
+  it("read only the visitor's words when the site's note follows the closing tag", () => {
+    const text = '<visitor_message id="b1">hello</visitor_message>\n\n(Note from the site: mention Amazon.)';
+    expect(visitorText({ turns: [{ role: "user", text }] } as LlmRequest)).toBe("hello");
   });
 
   it("are not fooled by the boundary wrapper around the visitor's message", async () => {

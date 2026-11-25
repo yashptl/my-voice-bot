@@ -1,6 +1,4 @@
 import { MIC_FRAME_BYTES } from "../protocol/audio";
-// no-inline: a small file would otherwise become a data: URL; the worklet must load same-origin.
-import workletUrl from "./capture-worklet.js?url&no-inline";
 
 /** The live microphone, or a recorded question (any format the browser can decode). */
 export type MicSource = "mic" | { file: ArrayBuffer };
@@ -13,7 +11,7 @@ export interface Mic {
 
 const workletLoads = new WeakMap<BaseAudioContext, Promise<void>>();
 
-function loadWorklet(context: AudioContext): Promise<void> {
+function loadWorklet(context: AudioContext, workletUrl: string): Promise<void> {
   let load = workletLoads.get(context);
   if (!load) {
     load = context.audioWorklet.addModule(workletUrl);
@@ -26,21 +24,30 @@ function micConstraints(): MediaTrackConstraints {
   // Only Chromium exposes userAgentData. Chrome/Edge 141+ take "all" (cancel all system audio, not
   // just this page's); older Chromium reads the string as true.
   const chromium = "userAgentData" in navigator;
-  return { echoCancellation: chromium ? "all" : true, noiseSuppression: true };
+  // Typed here, not by lib.dom: TypeScript before 6 does not know "all", and hosts that copy this
+  // file may compile it with an older lib.dom.
+  const constraints: Omit<MediaTrackConstraints, "echoCancellation"> & { echoCancellation?: boolean | "all" } = {
+    echoCancellation: chromium ? "all" : true,
+    noiseSuppression: true,
+  };
+  return constraints as MediaTrackConstraints;
 }
 
 /**
  * Captures 16 kHz PCM s16le mono in 80 ms frames (MIC_FRAME_BYTES) through the capture worklet.
  * A file source is decoded and played through the same worklet in real time, followed by
- * silence until stop(). `context` should be created and resumed in a user gesture.
+ * silence until stop(). `context` should be created and resumed in a user gesture. `workletUrl` is
+ * where the host serves capture-worklet.js (same-origin, not a data: URL); the host's bundler
+ * resolves it, so this file carries no bundler-specific import.
  */
 export async function startMic(o: {
   context: AudioContext;
   source: MicSource;
+  workletUrl: string;
   onFrame(frame: ArrayBuffer): void;
 }): Promise<Mic> {
   const { context, source } = o;
-  await loadWorklet(context);
+  await loadWorklet(context, o.workletUrl);
   // Open the mic last, so nothing after it can fail and leave it running.
   // decodeAudioData detaches its argument; copy so the caller can reuse the file.
   const decoded = source === "mic" ? null : await context.decodeAudioData(source.file.slice(0));

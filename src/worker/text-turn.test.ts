@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { PRESSED_ANSWER } from "../core/rules";
 import { createFakeLlm } from "../adapters/fake-llm";
 import type { Bundle } from "../knowledge/types";
 import { LlmError, type LlmPort } from "../ports/llm";
 import type { ServerEvent } from "../protocol/events";
 import type { TurnRecord } from "../protocol/turn-record";
 import { ConversationState } from "./conversation-state";
+import type { Gap } from "./gap-log";
 import { sourcesOf, textTurn } from "./text-turn";
 
 const bundle: Bundle = {
@@ -30,6 +32,7 @@ function setup(o: { reply?: string; llm?: LlmPort; prices?: typeof PRICES | null
   const signals: AbortSignal[] = [];
   const logs: string[] = [];
   const records: TurnRecord[] = [];
+  const gaps: Gap[] = [];
   const llm =
     o.llm ??
     createFakeLlm({
@@ -52,8 +55,9 @@ function setup(o: { reply?: string; llm?: LlmPort; prices?: typeof PRICES | null
       now: () => Date.now(),
       log: (level, line) => void logs.push(`${level}: ${line}`),
       onRecord: (r) => void records.push(structuredClone(r)),
+      onGap: (g) => void gaps.push(structuredClone(g)),
     });
-  return { run, state, signals, logs, records };
+  return { run, state, signals, logs, records, gaps };
 }
 
 async function collect(events: AsyncIterable<ServerEvent>): Promise<ServerEvent[]> {
@@ -103,7 +107,7 @@ describe("textTurn", () => {
     expect(record).toMatchObject({
       conversationId: "conv-1",
       mode: "text",
-      protocol: 1,
+      protocol: 2,
       model: "fake",
       promptHash: "prompthash01",
       knowledgeHash: bundle.hash,
@@ -233,6 +237,40 @@ describe("textTurn", () => {
     }
   });
 
+  it("a missed total deadline is a timeout error whose record says which deadline", async () => {
+    const h = setup({
+      llm: {
+        id: "slow",
+        model: "slow-model",
+        // eslint-disable-next-line require-yield
+        async *stream() {
+          throw new LlmError("timeout", "too slow", { deadline: "total" });
+        },
+      },
+    });
+    const out = await collect(h.run());
+    expect(out.map((e) => e.type)).toEqual(["turn.start", "error", "turn.end"]);
+    expect(out[1]).toEqual({ type: "error", code: "timeout", message: expect.any(String) });
+    expect(recordOf(out)).toMatchObject({ error: "llm_timeout_total" });
+  });
+
+  it("a rejected key is a resting error for an outage, and the log holds no provider text", async () => {
+    const h = setup({
+      llm: {
+        id: "rejected",
+        model: "rejected-model",
+        // eslint-disable-next-line require-yield
+        async *stream() {
+          throw new LlmError("auth", "secret provider text", { status: 401, code: 1004 });
+        },
+      },
+    });
+    const out = await collect(h.run());
+    expect(out[1]).toEqual({ type: "error", code: "resting", reason: "outage", message: expect.any(String) });
+    expect(recordOf(out)).toMatchObject({ error: "llm_auth" });
+    expect(h.logs).toEqual(["error: llm failed: auth 401 1004"]);
+  });
+
   it("answers normally when the provider's first refusal (a rate limit) clears on the retry", async () => {
     vi.useFakeTimers();
     try {
@@ -327,5 +365,34 @@ describe("sourcesOf", () => {
       { ref: "doc:resume", title: "doc:resume" },
       { ref: "role:magenta", title: "Magenta Connect · Full Stack Developer" },
     ]);
+  });
+});
+
+describe("textTurn onGap (the gap log)", () => {
+  it("is not called when the knowledge answered directly", async () => {
+    const h = setup();
+    await collect(h.run());
+    expect(h.gaps).toEqual([]);
+  });
+
+  it("gets the question and refs of an adjacent or none answer, once", async () => {
+    const adjacent = setup({ reply: `${S0}\n<meta>{"refs":["role:magenta"],"coverage":"adjacent"}</meta>` });
+    await collect(adjacent.run());
+    expect(adjacent.gaps).toEqual([{ mode: "text", coverage: "adjacent", refs: ["role:magenta"], question: QUESTION }]);
+    const none = setup({ reply: `${S0}\n<meta>{"refs":[],"coverage":"none"}</meta>` });
+    await collect(none.run());
+    expect(none.gaps).toEqual([{ mode: "text", coverage: "none", refs: [], question: QUESTION }]);
+  });
+
+  it("gets a pressed answer whose data line the rules filled in", async () => {
+    const h = setup({ reply: PRESSED_ANSWER });
+    await collect(h.run());
+    expect(h.gaps).toEqual([{ mode: "text", coverage: "none", refs: [], question: QUESTION }]);
+  });
+
+  it("is not called when there is no parsed data line", async () => {
+    const h = setup({ reply: `${S0} ${S1}` });
+    await collect(h.run());
+    expect(h.gaps).toEqual([]);
   });
 });

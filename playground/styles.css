@@ -203,6 +203,11 @@ body {
   font-size: 0.875rem;
 }
 
+.note.code {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
 .note.problem,
 .card .problem {
   color: var(--problem);
@@ -232,6 +237,21 @@ body {
   margin: 20px 0 0;
   padding: 0;
   list-style: none;
+}
+
+.starters li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.starters.more {
+  margin-top: 8px;
+}
+
+.starter-note {
+  color: var(--muted);
+  font-size: 0.75rem;
 }
 
 .chip {
@@ -330,6 +350,12 @@ body {
   margin: 0 0 8px;
   color: var(--problem);
   font-size: 0.875rem;
+}
+
+.disclosure {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.8125rem;
 }
 
 .footnote {

@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sqliteD1 } from "../../tests/sqlite-d1";
-import { MAX_BODY_BYTES } from "../protocol/chat";
+import { MAX_BODY_BYTES } from "../protocol/limits";
 import type { ServerEvent } from "../protocol/events";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, sha256Hex } from "./auth";
 import type { Env } from "./env";
-import { spend, utcDay } from "./ledger";
+import { reserveAudio, spend, spendTurn, spendVisitor, utcDay } from "./ledger";
+import { recordGap } from "./gap-log";
+import { setOutage } from "./outage-flag";
 import { recordTurn } from "./turn-log";
 
 // The Durable Object class needs workerd; the routes only talk to it through its namespace stub.
@@ -50,17 +52,39 @@ function brokenDb(): D1Database {
 }
 
 function setup(
-  o: { allow?: boolean; mode?: Env["ASSISTANT_MODE"]; secret?: string | null; db?: D1Database; answer?: ServerEvent[] } = {},
+  o: {
+    allow?: boolean;
+    mode?: Env["ASSISTANT_MODE"];
+    secret?: string | null;
+    ipHashKey?: string | null;
+    /** MINIMAX_API_KEY: a test value by default, null for none. */
+    minimaxKey?: string | null;
+    demo?: boolean;
+    db?: D1Database;
+    answer?: ServerEvent[];
+    /** Gives the Worker an alert address and binding; `sent` then holds the emails. */
+    alerts?: boolean;
+  } = {},
 ) {
   const keys: string[] = [];
   const forwarded: Request[] = [];
   const inits: [string, number][] = [];
+  const sent: { subject: string; text: string }[] = [];
   const env = {
+    ALERT_TO: o.alerts ? "owner@example.test" : undefined,
+    ALERT_EMAIL: o.alerts ? { send: async (m: { subject: string; text: string }) => void sent.push(m) } : undefined,
     ASSISTANT_MODE: o.mode ?? "voice",
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: "400",
+    DAILY_VOICE_SECONDS: "780",
+    DAILY_TTS_CHARS: "60000",
+    DAILY_TURNS_PER_IP: "60",
+    DAILY_VOICE_SECONDS_PER_IP: "300",
     TURNSTILE_SECRET: o.secret === null ? undefined : (o.secret ?? TURNSTILE_TEST_SECRET),
+    IP_HASH_KEY: o.ipHashKey === null ? undefined : (o.ipHashKey ?? "test-key"),
+    MINIMAX_API_KEY: o.minimaxKey === null ? undefined : (o.minimaxKey ?? "test-minimax-key"),
+    ASSISTANT_DEMO: o.demo ? "1" : undefined,
     RL_SESSION: {
       async limit({ key }: { key: string }) {
         keys.push(key);
@@ -82,7 +106,7 @@ function setup(
     },
     DB: o.db ?? sqliteD1(),
   } as unknown as Env;
-  return { env, keys, forwarded, inits };
+  return { env, keys, forwarded, inits, sent };
 }
 
 /** Replaces global fetch with a fake siteverify; returns the forms it received. */
@@ -117,8 +141,14 @@ function chatRequest(authorization: string | null = `Bearer ${mintToken().token}
   });
 }
 
-const call = (request: Request, env: Env) =>
-  (worker.fetch as (r: Request, e: Env) => Promise<Response>)(request, env);
+/** Calls the Worker, then waits for whatever it kept alive with waitUntil, so alerts have been sent. */
+const call = async (request: Request, env: Env) => {
+  const waits: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => void waits.push(p) } as unknown as ExecutionContext;
+  const res = await (worker.fetch as (r: Request, e: Env, x: ExecutionContext) => Promise<Response>)(request, env, ctx);
+  await Promise.all(waits);
+  return res;
+};
 const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as Record<string, unknown> });
 
 afterEach(() => {
@@ -163,7 +193,7 @@ describe("POST /assistant/session", () => {
 
   it("answers 503 mode off before anything else", async () => {
     const h = setup({ mode: "off" });
-    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { mode: "off" } });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "off" } });
     expect(h.keys).toEqual([]);
   });
 
@@ -182,6 +212,69 @@ describe("POST /assistant/session", () => {
       body: { error: "turnstile_not_configured" },
     });
     expect(h.inits).toEqual([]);
+  });
+
+  it("refuses everyone with 503 not_configured when IP_HASH_KEY is missing, before asking Turnstile", async () => {
+    const h = setup({ ipHashKey: null });
+    const forms = fakeSiteverify({ success: true });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "not_configured" } });
+    expect(forms).toEqual([]);
+    expect(h.inits).toEqual([]);
+  });
+
+  it("refuses everyone with 503 not_configured without MINIMAX_API_KEY unless in demo mode", async () => {
+    const h = setup({ minimaxKey: null });
+    const forms = fakeSiteverify({ success: true });
+    expect(await json(await call(sessionRequest(), h.env))).toEqual({ status: 503, body: { error: "not_configured" } });
+    expect(forms).toEqual([]);
+    expect(h.inits).toEqual([]);
+    const demo = setup({ minimaxKey: null, demo: true });
+    fakeSiteverify({ success: true });
+    expect((await call(sessionRequest(), demo.env)).status).toBe(200);
+  });
+
+  it("raises visitors_blocked when Turnstile fails on our side, naming the codes and nothing else", async () => {
+    const h = setup({ alerts: true });
+    fakeSiteverify({ success: false, "error-codes": ["invalid-input-secret"] });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await call(sessionRequest(), h.env)).status).toBe(403);
+    expect(h.sent.map((m) => m.subject)).toEqual(["Assistant alert: visitors_blocked"]);
+    expect(h.sent[0]?.text).toContain("turnstile: invalid-input-secret");
+    expect(h.sent[0]?.text).not.toContain(DUMMY_TOKEN);
+  });
+
+  it("says no codes when siteverify gave none", async () => {
+    const h = setup({ alerts: true });
+    fakeSiteverify({ success: false });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await call(sessionRequest(), h.env);
+    expect(h.sent[0]?.text).toContain("turnstile: no codes");
+  });
+
+  it("raises nothing for a visitor's bad, missing or expired token", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const code of ["invalid-input-response", "missing-input-response", "timeout-or-duplicate"]) {
+      const h = setup({ alerts: true });
+      fakeSiteverify({ success: false, "error-codes": [code] });
+      expect((await call(sessionRequest(), h.env)).status).toBe(403);
+      expect(h.sent, code).toEqual([]);
+    }
+  });
+
+  it("raises voice_resting when the day's shared voice is used up, and not when only this visitor's own is", async () => {
+    const db = sqliteD1();
+    await spend(db, "voice_seconds", 780, 780, utcDay(Date.now()));
+    const shared = setup({ db, alerts: true });
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), shared.env))).body).toMatchObject({ mode: "text" });
+    expect(shared.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]);
+    expect(shared.sent[0]?.text).toContain("the day's listening seconds are used up");
+
+    const own = setup({ db: sqliteD1(), alerts: true });
+    own.env.DAILY_VOICE_SECONDS_PER_IP = "30";
+    for (let i = 0; i < 2; i++) await reserveAudio(own.env, "203.0.113.7", 15, vi.fn());
+    expect((await json(await call(sessionRequest(), own.env))).body).toMatchObject({ mode: "text" });
+    expect(own.sent).toEqual([]);
   });
 
   it("refuses a token Turnstile rejects with 403, minting nothing", async () => {
@@ -204,40 +297,86 @@ describe("POST /assistant/session", () => {
     return db;
   }
 
-  it("mints a conversation once Turnstile passes, with resting false under the day's ceiling", async () => {
+  it("mints a conversation once Turnstile passes, with resting null under the day's ceiling", async () => {
     const h = setup({ db: await spentToday(399) });
     fakeSiteverify({ success: true });
     const before = Date.now();
     const res = await json(await call(sessionRequest(), h.env));
     expect(res).toEqual({
       status: 200,
-      body: { token: expect.any(String), protocol: 1, mode: "voice", expiresAt: expect.any(Number), resting: false },
+      body: { token: expect.any(String), protocol: 2, mode: "voice", expiresAt: expect.any(Number), resting: null },
     });
     const secret = String(res.body.token).split(".")[1] ?? "";
     expect(h.inits).toEqual([[await sha256Hex(secret), res.body.expiresAt]]);
     expect(Number(res.body.expiresAt)).toBeGreaterThanOrEqual(before + 30 * 60_000);
   });
 
-  it("says resting once the day's turns are used", async () => {
+  it("says resting ceiling once the day's turns are used", async () => {
     const h = setup({ db: await spentToday(400) });
     fakeSiteverify({ success: true });
-    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe(true);
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("ceiling");
   });
 
-  it("says resting when the ledger cannot be read (fails closed), and logs why", async () => {
+  it("says resting visitor once this visitor's own turns are used, while the day has room", async () => {
+    const h = setup({ db: sqliteD1() });
+    h.env.DAILY_TURNS_PER_IP = "1";
+    expect(await spendTurn(h.env, "203.0.113.7", vi.fn())).toBe("ok");
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("visitor");
+  });
+
+  it("says resting outage while the outage flag is set, with the day's turns and this visitor's to spare", async () => {
+    const db = sqliteD1();
+    await setOutage(db, "llm_quota", 1000);
+    const h = setup({ db });
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body.resting).toBe("outage");
+  });
+
+  it("says resting outage, in text mode, when the ledger cannot be read (fails closed), and logs why", async () => {
     const h = setup({ db: brokenDb() });
     fakeSiteverify({ success: true });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await json(await call(sessionRequest(), h.env));
-    expect(res).toMatchObject({ status: 200, body: { resting: true } });
+    expect(res).toMatchObject({ status: 200, body: { resting: "outage", mode: "text" } });
     expect(error).toHaveBeenCalledWith("ledger failed: D1 unavailable");
+  });
+
+  it("reports mode text instead of voice while voice is resting today", async () => {
+    for (const [unit, n] of [
+      ["voice_seconds", 1786],
+      ["tts_chars", 59_501],
+    ] as const) {
+      const db = sqliteD1();
+      await spend(db, unit, n, n, utcDay(Date.now()));
+      const h = setup({ db });
+      fakeSiteverify({ success: true });
+      expect((await json(await call(sessionRequest(), h.env))).body, unit).toMatchObject({ mode: "text", resting: null });
+    }
+  });
+
+  it("reports mode text for a visitor whose voice seconds are used up, and voice for everyone else", async () => {
+    const h = setup({ db: sqliteD1() });
+    h.env.DAILY_VOICE_SECONDS_PER_IP = "30";
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.8", 15, vi.fn());
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "voice" });
+    for (let i = 0; i < 2; i++) await reserveAudio(h.env, "203.0.113.7", 15, vi.fn());
+    expect((await json(await call(sessionRequest(), h.env))).body).toMatchObject({ mode: "text", resting: null });
+  });
+
+  it("keeps mode text and off as they are", async () => {
+    const db = sqliteD1();
+    await spend(db, "voice_seconds", 780, 780, utcDay(Date.now()));
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), setup({ db, mode: "text" }).env))).body.mode).toBe("text");
   });
 });
 
 describe("POST /assistant/chat", () => {
   it("answers 503 mode off", async () => {
     const h = setup({ mode: "off" });
-    expect(await json(await call(chatRequest(), h.env))).toEqual({ status: 503, body: { mode: "off" } });
+    expect(await json(await call(chatRequest(), h.env))).toEqual({ status: 503, body: { error: "off" } });
     expect(h.forwarded).toEqual([]);
   });
 
@@ -269,6 +408,65 @@ describe("POST /assistant/chat", () => {
     const res = await call(new Request("https://example.test/assistant/chat"), h.env);
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST");
+  });
+});
+
+describe("GET /assistant/health", () => {
+  const health = (env: Env) => call(new Request("https://example.test/assistant/health"), env);
+
+  it("is ok when every required name is set, listing only the missing optional one", async () => {
+    const h = setup();
+    expect(await json(await health(h.env))).toEqual({
+      status: 200,
+      body: {
+        ok: true,
+        protocol: 2,
+        mode: "voice",
+        demo: false,
+        missing: { required: [], optional: ["ALERT_TO"] },
+        providers: "llm minimax-flash (MiniMax-M3.1-Flash), tts minimax-speech, stt flux",
+      },
+    });
+  });
+
+  it("is not ok when required config is missing, naming it and never a value", async () => {
+    const h = setup({ secret: null, ipHashKey: null, minimaxKey: null });
+    const res = await json(await health(h.env));
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({
+      ok: false,
+      missing: { required: ["TURNSTILE_SECRET", "IP_HASH_KEY", "MINIMAX_API_KEY"], optional: ["ALERT_TO"] },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("test-key");
+  });
+
+  it("does not require MINIMAX_API_KEY in demo mode, and says it is demo", async () => {
+    const res = await json(await health(setup({ minimaxKey: null, demo: true }).env));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, demo: true, missing: { required: [] } });
+  });
+});
+
+describe("GET /assistant/blueprint", () => {
+  const blueprint = (method = "GET") =>
+    call(new Request("https://example.test/assistant/blueprint", { method }), setup().env);
+
+  it("serves the blueprint document as HTML, cacheable for an hour", async () => {
+    const res = await blueprint();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(await res.text()).toContain("<title>YashOS Assistant Blueprint</title>");
+  });
+
+  it("answers other methods 405", async () => {
+    const res = await blueprint("POST");
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
+  });
+
+  it("leaves other paths under /assistant a 404", async () => {
+    expect((await call(new Request("https://example.test/assistant/nope"), setup().env)).status).toBe(404);
   });
 });
 
@@ -310,19 +508,44 @@ describe("scheduled", () => {
     expect(JSON.stringify(error.mock.calls)).not.toContain("Magenta");
   });
 
-  it("deletes turn log rows after 30 days and daily counts after 7, and logs how many", async () => {
+  it("deletes turn log and gap rows after 30 days, daily counts after 7 and visitor counts once their day is over", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
     const db = sqliteD1();
     const now = Date.now();
     await recordTurn(db, { ...RECORD, turnId: "old" }, now - 31 * DAY);
     await recordTurn(db, { ...RECORD, turnId: "recent" }, now - 29 * DAY);
+    const gap = { conversationId: "c1", mode: "text", coverage: "none", refs: [], question: "q" } as const;
+    await recordGap(db, gap, now - 31 * DAY);
+    await recordGap(db, gap, now - 29 * DAY);
     await spend(db, "turns", 1, 1, utcDay(now - 8 * DAY));
     await spend(db, "turns", 1, 1, utcDay(now));
+    await spendVisitor(db, "a".repeat(64), 60, utcDay(now - DAY));
+    await spendVisitor(db, "b".repeat(64), 60, utcDay(now));
     await run(setup({ db, answer: [] }).env);
     expect(db.sqlite.prepare("SELECT turn_id FROM turns").all()).toEqual([{ turn_id: "recent" }]);
+    expect(db.sqlite.prepare("SELECT created_at FROM gaps").all()).toHaveLength(1);
     expect(db.sqlite.prepare("SELECT day FROM daily").all()).toEqual([{ day: utcDay(now) }]);
-    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns and 1 daily counts");
+    expect(db.sqlite.prepare("SELECT day FROM daily_ip").all()).toEqual([{ day: utcDay(now) }]);
+    expect(info).toHaveBeenCalledWith("retention: deleted 1 turns, 1 gaps, 1 daily counts and 1 visitor counts");
+  });
+
+  it("sends the weekly summary on a Monday morning, and nothing on other days", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const monday = setup({ answer: [], alerts: true });
+      vi.setSystemTime(Date.UTC(2026, 10, 30, 3, 17));
+      await run(monday.env);
+      expect(monday.sent.map((m) => m.subject)).toContain("Assistant weekly summary");
+      const tuesday = setup({ answer: [], alerts: true });
+      vi.setSystemTime(Date.UTC(2026, 11, 1, 3, 17));
+      await run(tuesday.env);
+      expect(tuesday.sent.map((m) => m.subject)).not.toContain("Assistant weekly summary");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("logs a retention failure without stopping the canary", async () => {
@@ -330,7 +553,8 @@ describe("scheduled", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     const h = setup({ db: brokenDb(), answer: [] });
     await run(h.env);
-    expect(h.forwarded).toHaveLength(1);
+    // The canary ran, and a failed one runs again straight away: twice.
+    expect(h.forwarded).toHaveLength(2);
     expect(error).toHaveBeenCalledWith("retention failed: D1 unavailable");
   });
 });

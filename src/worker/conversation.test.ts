@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { sqliteD1 } from "../../tests/sqlite-d1";
-import { MAX_BODY_BYTES } from "../protocol/chat";
+import { MAX_BODY_BYTES } from "../protocol/limits";
 import type { ServerEvent } from "../protocol/events";
 import { SseParser } from "../protocol/sse";
+import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, parseToken } from "./auth";
 import type { Env } from "./env";
-import { used, utcDay } from "./ledger";
+import { spend, used, utcDay, type LedgerUnit } from "./ledger";
+import { readOutage, setOutage } from "./outage-flag";
+import { LlmError, type LlmErrorKind } from "../ports/llm";
 
 // The Durable Object base class only exists inside workerd; the shell needs nothing from it here.
 vi.mock("cloudflare:workers", () => ({
@@ -20,16 +23,79 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 
+/** When set, the model fails with this error kind instead of answering: how a test makes a provider outage. */
+const failingModel: { kind: LlmErrorKind | null; deadline?: "total" } = { kind: null };
+/** When true, the model says one sentence and then waits until its request is aborted: a turn a test can stop at a known point. */
+const pausingModel = { on: false };
+vi.mock("./providers", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./providers")>();
+  return {
+    ...real,
+    buildProviders(env: Env) {
+      const providers = real.buildProviders(env);
+      if (pausingModel.on) {
+        return {
+          ...providers,
+          llm: {
+            ...providers.llm,
+            async *stream(_req: unknown, signal?: AbortSignal) {
+              yield { t: "text" as const, text: "Yash works at Magenta Connect. Joined in" };
+              await new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve()));
+            },
+          },
+        };
+      }
+      if (!failingModel.kind) return providers;
+      const { kind, deadline } = failingModel;
+      return {
+        ...providers,
+        llm: {
+          ...providers.llm,
+          // eslint-disable-next-line require-yield
+          async *stream() {
+            throw new LlmError(kind, "scripted failure", { deadline });
+          },
+        },
+      };
+    },
+  };
+});
+
 const { Conversation, RETENTION_MS, readJson } = await import("./conversation");
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/** A finished voice record, for calling the shell's turn hook directly. */
+const turnRecord = (): TurnRecord => ({
+  turnId: "turn-1",
+  conversationId: "conv-1",
+  mode: "voice",
+  protocol: 1,
+  model: "m",
+  promptHash: "p".repeat(64),
+  knowledgeHash: "k".repeat(64),
+  marks: {},
+  tokens: { input: 0, cachedInput: 0, reasoning: 0, reasoningEstimated: false, output: 0 },
+  ttsChars: 0,
+  audioInSeconds: 0,
+  costUsd: null,
+  coverage: null,
+  dataLine: null,
+  gate: { dropped: 0, reasons: [], flags: [] },
+  grounding: null,
+  interrupted: false,
+  error: null,
+});
 
 /** The storage calls the shell makes, in memory. */
 function fakeState() {
   const data = new Map<string, unknown>();
   let alarm: number | null = null;
+  /** Single-key reads of these keys reject, like a storage failure. */
+  const failKeys = new Set<string>();
   const storage = {
     async get(key: string | string[]) {
+      if (typeof key === "string" && failKeys.has(key)) throw new Error("storage unavailable");
       if (Array.isArray(key)) return new Map(key.filter((k) => data.has(k)).map((k) => [k, data.get(k)]));
       return structuredClone(data.get(key));
     },
@@ -44,7 +110,8 @@ function fakeState() {
       data.clear();
     },
   };
-  return { ctx: { storage } as unknown as DurableObjectState, data, alarm: () => alarm };
+  const waitUntil = (p: Promise<unknown>) => void p; // the promise runs on its own in tests
+  return { ctx: { storage, waitUntil } as unknown as DurableObjectState, data, failKeys, alarm: () => alarm };
 }
 
 describe("Conversation", () => {
@@ -122,22 +189,37 @@ const QUESTION = "Where does Yash work?";
 
 /**
  * A Conversation initialised for a fresh token, on keyless providers (the scripted demo LLM), over
- * a SQLite D1 double. `db` "refuse" leaves no turns for the day; "throw" fails every call; "no-log"
- * fails only the turn log's writes.
+ * a SQLite D1 double (`sqlite`, to share one between conversations). `db` "refuse" leaves no turns
+ * for the day; "throw" fails every call; "no-log" fails only the turn log's writes. `vars` override
+ * the daily ceilings.
  */
 async function chatSetup(
-  o: { db?: "ok" | "refuse" | "throw" | "no-log"; turnsStarted?: number; expiresIn?: number; source?: "canary" } = {},
+  o: {
+    db?: "ok" | "refuse" | "throw" | "no-log" | "no-gaps" | "no-flags";
+    sqlite?: ReturnType<typeof sqliteD1>;
+    vars?: Partial<Env>;
+    ai?: unknown;
+    turnsStarted?: number;
+    expiresIn?: number;
+    source?: "canary";
+  } = {},
 ) {
   const s = fakeState();
   if (o.turnsStarted !== undefined) s.data.set("turnsStarted", o.turnsStarted);
-  const db = sqliteD1();
-  const failing = (sql: string) => o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns"));
+  const db = o.sqlite ?? sqliteD1();
+  const failing = (sql: string) =>
+    o.db === "throw" || (o.db === "no-log" && sql.includes("INTO turns")) || (o.db === "no-gaps" && sql.includes("INTO gaps")) ||
+    (o.db === "no-flags" && sql.includes("INTO flags"));
   const env = {
-    AI: {},
+    AI: o.ai ?? {},
     ASSISTANT_MODE: "voice",
+    ASSISTANT_DEMO: "1", // no MINIMAX_API_KEY: the scripted demo is explicit now
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: o.db === "refuse" ? "0" : "400",
+    DAILY_TURNS_PER_IP: "60",
+    IP_HASH_KEY: "test-key",
+    ...o.vars,
     DB: {
       prepare(sql: string) {
         if (failing(sql)) throw new Error("D1 unavailable");
@@ -149,14 +231,23 @@ async function chatSetup(
   const minted = mintToken();
   await conversation.init(await minted.secretHash, Date.now() + (o.expiresIn ?? 60_000), o.source);
   const spentToday = () => used(db, "turns", utcDay(Date.now()));
+  const usedToday = (unit: LedgerUnit) => used(db, unit, utcDay(Date.now()));
+  const visitorCounts = () => db.sqlite.prepare("SELECT used FROM daily_ip ORDER BY used").all().map((r) => r.used);
   const turnRows = () => db.sqlite.prepare("SELECT * FROM turns").all();
-  return { conversation, token: minted.token, data: s.data, spentToday, turnRows };
+  const gapRows = () => db.sqlite.prepare("SELECT * FROM gaps").all();
+  return { conversation, token: minted.token, data: s.data, failKeys: s.failKeys, spentToday, usedToday, visitorCounts, turnRows, gapRows, db };
 }
 
-function chat(token: string | null, body: unknown = { message: QUESTION }, init: RequestInit = {}): Request {
+const IP = "203.0.113.7";
+
+function chat(token: string | null, body: unknown = { message: QUESTION }, init: RequestInit = {}, ip = IP): Request {
   return new Request("https://example.test/assistant/chat", {
     method: "POST",
-    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": ip,
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: typeof body === "string" ? body : JSON.stringify(body),
     ...init,
   });
@@ -181,6 +272,12 @@ async function readEvents(res: Response, stopAfter?: (e: ServerEvent) => boolean
   }
 }
 
+afterEach(() => {
+  pausingModel.on = false;
+  failingModel.kind = null;
+  failingModel.deadline = undefined;
+});
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const json = async (res: Response) => ({ status: res.status, body: await res.json() });
 
@@ -194,7 +291,7 @@ describe("Conversation POST /assistant/chat", () => {
     const res = await h.conversation.fetch(chat(h.token));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
-    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("cache-control")).toBe("no-store, no-transform");
     const events = await readEvents(res);
     const types = events.map((e) => e.type);
     expect(types[0]).toBe("turn.start");
@@ -206,6 +303,62 @@ describe("Conversation POST /assistant/chat", () => {
       { role: "user", text: QUESTION },
       { role: "assistant", text: expect.stringContaining("Magenta Connect") },
     ]);
+  });
+
+  describe("a long message", () => {
+    const longMessage = (n: number, unit = "a") => ({ message: unit.repeat(Math.ceil(n / unit.length)).slice(0, n) });
+
+    it("accepts 12,000 characters and counts it as three turns: conversation, visitor and shared", async () => {
+      const h = await chatSetup();
+      const res = await h.conversation.fetch(chat(h.token, longMessage(12_000)));
+      expect(res.status).toBe(200);
+      await readEvents(res);
+      expect(h.data.get("turnsStarted")).toBe(3);
+      expect(await h.spentToday()).toBe(3);
+      expect(h.visitorCounts()).toEqual([3]);
+    });
+
+    it("counts 4,000 characters as one turn", async () => {
+      const h = await chatSetup();
+      await readEvents(await h.conversation.fetch(chat(h.token, longMessage(4000))));
+      expect(h.data.get("turnsStarted")).toBe(1);
+      expect(await h.spentToday()).toBe(1);
+    });
+
+    it("refuses 12,001 characters with 400, counting nothing", async () => {
+      const h = await chatSetup();
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(12_001))))).toEqual({ status: 400, body: { error: "bad_request" } });
+      expect(await h.spentToday()).toBe(0);
+      expect(h.data.get("turnsStarted")).toBeUndefined();
+    });
+
+    it.each([
+      ["wide characters", "語"],
+      ["emoji pairs", "😀"],
+    ])("accepts 12,000 characters of %s within the body limit", async (_name, unit) => {
+      const h = await chatSetup();
+      const res = await h.conversation.fetch(chat(h.token, longMessage(12_000, unit)));
+      expect(res.status).toBe(200);
+      await readEvents(res);
+      expect(await h.spentToday()).toBe(3);
+    });
+
+    it("gives the conversation its three turns back when the visitor's day refuses it", async () => {
+      const h = await chatSetup({ vars: { DAILY_TURNS_PER_IP: "2" }, turnsStarted: 5 });
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(8000))))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "visitor" },
+      });
+      expect(h.data.get("turnsStarted")).toBe(5);
+      expect(await h.spentToday()).toBe(0);
+    });
+
+    it("replies 429 limit when fewer than three of the conversation's turns are left", async () => {
+      const h = await chatSetup({ turnsStarted: 28 });
+      expect(await json(await h.conversation.fetch(chat(h.token, longMessage(8000))))).toEqual({ status: 429, body: { error: "limit" } });
+      expect(h.data.get("turnsStarted")).toBe(28);
+      expect(await h.spentToday()).toBe(0);
+    });
   });
 
   it("refuses a missing, malformed, wrong or expired token with 401", async () => {
@@ -228,7 +381,7 @@ describe("Conversation POST /assistant/chat", () => {
       { message: "   " },
       { message: "\u200B\u202E" }, // only invisible characters: nothing left once sanitized
       { message: 42 },
-      { message: "x".repeat(4001) },
+      { message: "x".repeat(12_001) },
       { message: QUESTION, padding: "y".repeat(MAX_BODY_BYTES) },
     ];
     for (const body of bad) {
@@ -262,22 +415,90 @@ describe("Conversation POST /assistant/chat", () => {
     expect((await h.conversation.fetch(chat(h.token))).status).toBe(429); // not stuck busy
   });
 
-  it("answers 503 resting when the day's ceiling is reached, and fails closed when the ledger errors", async () => {
+  it("answers 503 resting with its reason when the day's ceiling is reached or the ledger fails, giving back the visitor's and the conversation's turn", async () => {
     const refused = await chatSetup({ db: "refuse" });
     expect(await json(await refused.conversation.fetch(chat(refused.token)))).toEqual({
       status: 503,
-      body: { error: "resting" },
+      body: { error: "resting", reason: "ceiling" },
     });
+    expect(refused.visitorCounts()).toEqual([0]);
+    expect(refused.data.get("turnsStarted")).toBe(0);
     expect((await refused.conversation.fetch(chat(refused.token))).status).toBe(503); // not stuck busy
 
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const broken = await chatSetup({ db: "throw" });
     expect(await json(await broken.conversation.fetch(chat(broken.token)))).toEqual({
       status: 503,
-      body: { error: "resting" },
+      body: { error: "resting", reason: "outage" },
     });
     expect(errors).toHaveBeenCalledWith(expect.stringMatching(/ledger failed: D1 unavailable/));
     expect(refused.turnRows()).toEqual([]); // no model call, so nothing to log
+  });
+
+  it("answers 503 resting, not a 500, and undoes the turn when a ceiling var is not a string or a whole number", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // A JSON number is a valid ceiling and chat answers.
+    const num = await chatSetup({ vars: { DAILY_TURNS: 400 as unknown as string } });
+    const ok = await num.conversation.fetch(chat(num.token));
+    expect(ok.status).toBe(200);
+    await readEvents(ok);
+    // Anything else pauses (0): the ceiling. Whatever else throws inside the spend is an outage.
+    for (const v of [{}, null, 1.5]) {
+      const h = await chatSetup({ vars: { DAILY_TURNS: v as unknown as string } });
+      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "ceiling" },
+      });
+      expect(h.data.get("turnsStarted")).toBe(0);
+    }
+    const odd = await chatSetup({ vars: { DAILY_TURNS_PER_IP: { toString: () => "x" } as unknown as string } });
+    (odd.conversation as unknown as { env: { IP_HASH_KEY: unknown } }).env.IP_HASH_KEY = { throws: 1 };
+    expect(await json(await odd.conversation.fetch(chat(odd.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
+    expect(odd.data.get("turnsStarted")).toBe(0);
+    expect((await odd.conversation.fetch(chat(odd.token))).status).toBe(503); // not stuck busy
+  });
+
+  it("answers 503 resting, reason visitor, once the visitor's IP has used its turns today, giving back everyone's and the conversation's", async () => {
+    const sqlite = sqliteD1();
+    const vars = { DAILY_TURNS_PER_IP: "1" };
+    const first = await chatSetup({ sqlite, vars });
+    await readEvents(await first.conversation.fetch(chat(first.token)));
+    // A new conversation from the same IP shares the visitor's count; another IP has its own.
+    const second = await chatSetup({ sqlite, vars });
+    expect(await json(await second.conversation.fetch(chat(second.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "visitor" },
+    });
+    expect(await second.spentToday()).toBe(1);
+    expect(second.data.get("turnsStarted")).toBe(0);
+    expect(second.visitorCounts()).toEqual([1]);
+    const elsewhere = await second.conversation.fetch(chat(second.token, undefined, {}, "203.0.113.8"));
+    expect(elsewhere.status).toBe(200);
+    await readEvents(elsewhere);
+  });
+
+  it("counts a request without cf-connecting-ip as the visitor unknown", async () => {
+    const h = await chatSetup({ vars: { DAILY_TURNS_PER_IP: "1" } });
+    const bare = () => {
+      const r = chat(h.token);
+      r.headers.delete("cf-connecting-ip");
+      return r;
+    };
+    await readEvents(await h.conversation.fetch(bare()));
+    expect((await h.conversation.fetch(bare())).status).toBe(503);
+  });
+
+  it("refuses every answer as an outage without IP_HASH_KEY (fails closed)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = await chatSetup({ vars: { IP_HASH_KEY: undefined } });
+    expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
+    expect(await h.spentToday()).toBe(0);
   });
 
   it("cancelling the response mid-answer stops the turn, keeps only what was sent and frees the conversation", async () => {
@@ -297,6 +518,7 @@ describe("Conversation POST /assistant/chat", () => {
   });
 
   it("aborting the request (the visitor went away) stops the turn the same way", async () => {
+    pausingModel.on = true; // one sentence, then silence: nothing can be queued before the abort
     const h = await chatSetup();
     const visitor = new AbortController();
     const res = await h.conversation.fetch(chat(h.token, undefined, { signal: visitor.signal }));
@@ -350,6 +572,146 @@ describe("Conversation POST /assistant/chat", () => {
     expect(h.turnRows()).toEqual([expect.objectContaining({ mode: "text", source: "canary" })]);
   });
 
+  describe("with the outage flag", () => {
+    it("is set: answers 503 resting, reason outage, spends nothing and undoes the conversation's turn", async () => {
+      const h = await chatSetup();
+      await setOutage(h.db, "llm_quota", 1000);
+      expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+        status: 503,
+        body: { error: "resting", reason: "outage" },
+      });
+      expect(h.data.get("turnsStarted")).toBe(0);
+      expect(await h.spentToday()).toBe(0);
+      expect(h.visitorCounts()).toEqual([0]);
+    });
+
+    it("is set: still answers the canary's conversation", async () => {
+      const h = await chatSetup({ source: "canary" });
+      await setOutage(h.db, "llm_quota", 1000);
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      expect(events.at(-1)).toMatchObject({ type: "turn.end", record: { error: null } });
+      expect(await h.spentToday()).toBe(1);
+    });
+
+    for (const [kind, error] of [
+      ["auth", "llm_auth"],
+      ["quota", "llm_quota"],
+    ] as const) {
+      it(`is set by a visitor's turn that ends ${error}, with that error as the reason`, async () => {
+        failingModel.kind = kind;
+        const h = await chatSetup();
+        await readEvents(await h.conversation.fetch(chat(h.token)));
+        await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: error, alerted: false }));
+      });
+    }
+
+    it("is set by the canary's turn too: whatever the conversation's source", async () => {
+      failingModel.kind = "auth";
+      const h = await chatSetup({ source: "canary" });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: "llm_auth" }));
+    });
+
+    it("is not set by a turn that ends in a timeout", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const h = await chatSetup();
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(h.turnRows()).toEqual([expect.objectContaining({ error: "llm_timeout_total" })]));
+      await sleep(0);
+      expect(events.at(-1)).toMatchObject({ type: "turn.end", record: { error: "llm_timeout_total" } });
+      expect(await readOutage(h.db)).toBeNull();
+    });
+
+    it("a failed write of the flag is logged and does not break the turn: the answer still ends", async () => {
+      failingModel.kind = "auth";
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const h = await chatSetup({ db: "no-flags" });
+      const events = await readEvents(await h.conversation.fetch(chat(h.token)));
+      expect(events.at(-1)).toMatchObject({ type: "turn.end" });
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(expect.stringMatching(/outage flag failed: D1 unavailable/)));
+    });
+  });
+
+
+  describe("alerts for visitor failures", () => {
+    const sentTo = () => {
+      const sent: { subject: string; text: string }[] = [];
+      const vars = {
+        ALERT_TO: "owner@example.test",
+        ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+      } as unknown as Partial<Env>;
+      return { sent, vars };
+    };
+
+    it("a visitor's turn that ends in a timeout raises answer_failed with the code as its reason", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: answer_failed"]));
+      expect(a.sent[0]?.text).toContain("llm_timeout_total");
+      expect(a.sent[0]?.text).not.toContain(QUESTION);
+    });
+
+    it("a quota failure goes through reportOutage: one outage email, no answer_failed", async () => {
+      failingModel.kind = "quota";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(async () => expect(await readOutage(h.db)).toMatchObject({ reason: "llm_quota", alerted: true }));
+      await sleep(0);
+      expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: outage"]);
+      expect(a.sent[0]?.text).toContain("llm_quota");
+    });
+
+    it("a canary conversation's failed answer raises no answer_failed (the hourly check reports it)", async () => {
+      failingModel.kind = "timeout";
+      failingModel.deadline = "total";
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars, source: "canary" });
+      await readEvents(await h.conversation.fetch(chat(h.token)));
+      await vi.waitFor(() => expect(h.turnRows()).toHaveLength(1));
+      await sleep(10);
+      expect(a.sent).toEqual([]);
+    });
+
+    it("a stopped answer, and an answer that ended cleanly, raise nothing", async () => {
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      await readEvents(await h.conversation.fetch(chat(h.token)), (e) => e.type === "sentence");
+      await sleep(50);
+      const ok = await chatSetup({ vars: a.vars });
+      await readEvents(await ok.conversation.fetch(chat(ok.token)));
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
+
+    it("a record whose only error is a speech failure raises nothing from logTurn, because voice_failed covers it", async () => {
+      const a = sentTo();
+      const h = await chatSetup({ vars: a.vars });
+      const logTurn = (h.conversation as unknown as { logTurn(r: object, log: () => void): void }).logTurn.bind(h.conversation);
+      for (const error of ["tts_failed", "tts_timeout"]) {
+        logTurn({ ...turnRecord(), error }, () => {});
+      }
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
+  });
+
+  it("a storage failure reading the conversation's source gives 503 resting outage, with the turn undone", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = await chatSetup();
+    h.failKeys.add("source");
+    expect(await json(await h.conversation.fetch(chat(h.token)))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "outage" },
+    });
+    expect(h.data.get("turnsStarted")).toBe(0);
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/spend failed: storage unavailable/));
+  });
+
   it("logs a stopped answer as interrupted", async () => {
     const h = await chatSetup();
     await readEvents(await h.conversation.fetch(chat(h.token)), (e) => e.type === "sentence");
@@ -372,9 +734,319 @@ describe("Conversation POST /assistant/chat", () => {
     await readEvents(next);
   });
 
+  it("writes a gap row for a question the knowledge did not cover: the question as sent, mode, coverage, refs", async () => {
+    const h = await chatSetup();
+    const asked = "Tell me a joke, my email is a@b.co";
+    await readEvents(await h.conversation.fetch(chat(h.token, { message: asked })));
+    await sleep(0);
+    expect(h.gapRows()).toEqual([
+      expect.objectContaining({ conversation: parseToken(h.token)?.conversationId.slice(0, 8), mode: "text", coverage: "none", refs: "[]", question: asked }),
+    ]);
+  });
+
+  it("writes no gap row when the knowledge answered directly, or for the canary", async () => {
+    const direct = await chatSetup();
+    await readEvents(await direct.conversation.fetch(chat(direct.token)));
+    await sleep(0);
+    expect(direct.gapRows()).toEqual([]);
+    const canary = await chatSetup({ source: "canary" });
+    await readEvents(await canary.conversation.fetch(chat(canary.token, { message: "Tell me a joke" })));
+    await sleep(0);
+    expect(canary.gapRows()).toEqual([]);
+  });
+
+  it("still streams the whole answer when the gap log fails, and logs why without the question", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = await chatSetup({ db: "no-gaps" });
+    const events = await readEvents(await h.conversation.fetch(chat(h.token, { message: "Tell me a joke" })));
+    await sleep(0);
+    expect(events.map((e) => e.type).slice(-2)).toEqual(["meta", "turn.end"]);
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^conversation \w+: gap log failed: D1 unavailable$/));
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("joke");
+  });
+
   it("still requires a WebSocket upgrade on any other path", async () => {
     const h = await chatSetup();
     const res = await h.conversation.fetch(new Request("https://example.test/assistant/voice"));
     expect(res.status).toBe(426);
+  });
+});
+
+/** Just enough of a Workers WebSocket: records what is sent and how it closed; `emit` plays the other end. */
+class FakeSocket {
+  binaryType = "blob";
+  sent: (string | ArrayBuffer)[] = [];
+  closed: { code: number; reason: string } | null = null;
+  private listeners = new Map<string, ((e: unknown) => void)[]>();
+  accept(): void {}
+  send(data: string | ArrayBuffer): void {
+    if (this.closed) throw new Error("WebSocket is closed");
+    this.sent.push(data);
+  }
+  close(code: number, reason: string): void {
+    this.closed ??= { code, reason };
+  }
+  addEventListener(type: string, fn: (e: unknown) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  emit(type: string, e: unknown = {}): void {
+    for (const fn of this.listeners.get(type) ?? []) fn(e);
+  }
+  events(): ServerEvent[] {
+    return this.sent.flatMap((d) => (typeof d === "string" ? [JSON.parse(d) as ServerEvent] : []));
+  }
+}
+
+describe("Conversation voice socket", () => {
+  /** The Durable Object's end of each WebSocketPair, and each Flux socket Workers AI opened. */
+  const servers: FakeSocket[] = [];
+  const fluxes: FakeSocket[] = [];
+  const ai = {
+    async run() {
+      const flux = new FakeSocket();
+      fluxes.push(flux);
+      return { status: 101, webSocket: flux };
+    },
+  };
+
+  beforeEach(() => {
+    servers.length = 0;
+    fluxes.length = 0;
+    vi.stubGlobal(
+      "WebSocketPair",
+      class {
+        0 = new FakeSocket();
+        1 = new FakeSocket();
+        constructor() {
+          servers.push(this[1]);
+        }
+      },
+    );
+    // Node's Response refuses status 101; workerd's takes it, with the client's end of the socket.
+    const NodeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class extends NodeResponse {
+        constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: unknown }) {
+          super(body, init?.status === 101 ? { ...init, status: 200 } : init);
+          if (init?.status === 101) Object.defineProperty(this, "status", { value: 101 });
+        }
+      },
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function upgrade(token: string, ip = IP): Request {
+    return new Request("https://example.test/assistant/voice", {
+      headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": `assistant.v1, ${token}`, "cf-connecting-ip": ip },
+    });
+  }
+
+  /** Opens a socket and waits for `ready`. */
+  async function open(h: Awaited<ReturnType<typeof chatSetup>>) {
+    const res = await h.conversation.fetch(upgrade(h.token));
+    const socket = servers.at(-1) as FakeSocket;
+    await vi.waitFor(() => expect(socket.events().map((e) => e.type)).toContain("ready"));
+    return { res, socket, flux: fluxes.at(-1) as FakeSocket };
+  }
+
+  const ask = (flux: FakeSocket, transcript: string, turnIndex = 0) =>
+    flux.emit("message", { data: JSON.stringify({ event: "EndOfTurn", transcript, turn_index: turnIndex }) });
+  const types = (socket: FakeSocket) => socket.events().map((e) => (e.type === "error" ? `error:${e.code}` : e.type));
+
+  it("refuses a malformed, wrong or expired token at upgrade with 401, reserving nothing", async () => {
+    const h = await chatSetup({ ai });
+    const conversationId = parseToken(h.token)?.conversationId ?? "";
+    for (const token of ["not-a-token", `${conversationId}.${"A".repeat(43)}`]) {
+      expect((await h.conversation.fetch(upgrade(token))).status).toBe(401);
+    }
+    const expired = await chatSetup({ ai, expiresIn: -1 });
+    expect((await expired.conversation.fetch(upgrade(expired.token))).status).toBe(401);
+    expect(servers).toEqual([]);
+    expect(fluxes).toEqual([]);
+    expect(await h.usedToday("voice_seconds")).toBe(0);
+  });
+
+  it("accepts a good token with 101, reserving the first 15 s block of the day's mic audio", async () => {
+    const h = await chatSetup({ ai });
+    const { res, socket } = await open(h);
+    expect(res.status).toBe(101);
+    expect(res.headers.get("Sec-WebSocket-Protocol")).toBe("assistant.v1");
+    expect(types(socket).slice(0, 2)).toEqual(["ready", "state"]);
+    expect(await h.usedToday("voice_seconds")).toBe(15);
+  });
+
+  for (const [what, vars] of [
+    ["less than one 15 s block of mic audio", { DAILY_VOICE_SECONDS: "10" }],
+    ["less than one reply's 500 spoken characters", { DAILY_TTS_CHARS: "400" }],
+  ] as const) {
+    it(`with ${what} left today: accepts, says voice_resting at once and closes 1008, opening nothing`, async () => {
+      const h = await chatSetup({ ai, vars });
+      const res = await h.conversation.fetch(upgrade(h.token));
+      expect(res.status).toBe(101); // a browser hides a refused upgrade's status, so the socket says why
+      const socket = servers.at(-1);
+      expect(socket?.events()).toEqual([{ type: "error", code: "voice_resting", message: expect.any(String) }]);
+      expect(socket?.closed).toEqual({ code: 1008, reason: "voice resting" });
+      expect(fluxes).toEqual([]);
+      expect(await h.usedToday("voice_seconds")).toBe(0);
+    });
+  }
+
+  it("with the visitor's own seconds used up while everyone's remain: accepts, says voice_resting and closes 1008", async () => {
+    const h = await chatSetup({ ai, vars: { DAILY_VOICE_SECONDS_PER_IP: "10" } });
+    const res = await h.conversation.fetch(upgrade(h.token));
+    expect(res.status).toBe(101);
+    const socket = servers.at(-1);
+    expect(socket?.events()).toEqual([{ type: "error", code: "voice_resting", message: expect.any(String) }]);
+    expect(socket?.closed).toEqual({ code: 1008, reason: "voice resting" });
+    expect(fluxes).toEqual([]);
+    expect(await h.usedToday("voice_seconds")).toBe(0); // everyone's block was given back
+    expect(h.visitorCounts()).toEqual([]); // a block bigger than the cap writes no row
+  });
+
+  describe("voice_resting alert", () => {
+    const alerts = () => {
+      const sent: { subject: string; text: string }[] = [];
+      const vars = {
+        ALERT_TO: "owner@example.test",
+        ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+      } as unknown as Partial<Env>;
+      return { sent, vars };
+    };
+
+    it("is raised when the first block is refused because the day's listening seconds are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_VOICE_SECONDS: "10" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+      expect(a.sent[0]?.text).toContain("the day's listening seconds are used up");
+    });
+
+    it("is raised when the day's spoken characters are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_TTS_CHARS: "400" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+      expect(a.sent[0]?.text).toContain("the day's spoken characters are used up");
+    });
+
+    it("is raised when a later reservation is refused during a conversation", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_TTS_CHARS: "500" } });
+      const { socket, flux } = await open(h);
+      await spend(h.db, "tts_chars", 1, 500, utcDay(Date.now())); // everyone else takes the last characters
+      ask(flux, QUESTION);
+      await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+    });
+
+    it("is not raised when only this visitor's own seconds are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_VOICE_SECONDS_PER_IP: "10" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
+  });
+
+  it("reserves the first block from the visitor too, and gives the unused part of both back on close", async () => {
+    const h = await chatSetup({ ai });
+    const { socket } = await open(h);
+    expect(h.visitorCounts()).toEqual([15]);
+    socket.emit("close");
+    await vi.waitFor(() => expect(h.visitorCounts()).toEqual([15]));
+    await vi.waitFor(async () => expect(await h.usedToday("voice_seconds")).toBe(0));
+    await vi.waitFor(() => expect(h.visitorCounts()).toEqual([0]));
+  });
+
+  it("replaces the old socket with a new one, closing the old with 4000 and giving back its audio", async () => {
+    const h = await chatSetup({ ai });
+    const first = await open(h);
+    const second = await open(h);
+    expect(first.socket.closed).toEqual({ code: 4000, reason: "replaced by a newer connection" });
+    expect(second.socket.closed).toBeNull();
+    first.socket.emit("close"); // arrives late; the new socket carries on
+    await vi.waitFor(async () => expect(await h.usedToday("voice_seconds")).toBe(15));
+    second.socket.emit("message", { data: new ArrayBuffer(2560) });
+    expect(second.flux.sent).toHaveLength(1);
+  });
+
+  it("closing the socket flushes the meter and gives back the unused mic audio", async () => {
+    const h = await chatSetup({ ai });
+    const { socket } = await open(h);
+    for (let i = 0; i < 10; i++) socket.emit("message", { data: new ArrayBuffer(2560) }); // 0.8 s
+    expect(h.data.get("meter")).toBeUndefined(); // saved every 5 s of audio, so not yet
+    socket.emit("close");
+    await vi.waitFor(() => expect(h.data.get("meter")).toMatchObject({ bytes: 25_600 }));
+    await vi.waitFor(async () => expect(await h.usedToday("voice_seconds")).toBe(1)); // 14.2 s back, rounded down
+  });
+
+  it("closes the socket when the session expires", async () => {
+    const h = await chatSetup({ ai, expiresIn: 400 });
+    const { socket } = await open(h);
+    expect(socket.closed).toBeNull();
+    await vi.waitFor(() => expect(socket.closed).toEqual({ code: 1000, reason: "session expired" }), { timeout: 2000 });
+  });
+
+  it("lets text and voice on one conversation take 30 turns between them, never more", async () => {
+    const h = await chatSetup({ ai, turnsStarted: 29 });
+    const { socket, flux } = await open(h);
+    // A voice question and a text question at once: only one gets the conversation's last turn.
+    ask(flux, QUESTION);
+    expect(await json(await h.conversation.fetch(chat(h.token, { message: "And before that?" })))).toEqual({
+      status: 429,
+      body: { error: "limit" },
+    });
+    await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
+    expect(h.data.get("turnsStarted")).toBe(30);
+    ask(flux, "And before that?", 1);
+    expect(types(socket).at(-1)).toBe("error:limit");
+    expect(socket.closed).toEqual({ code: 1008, reason: "turn limit" });
+    expect(h.data.get("turnsStarted")).toBe(30);
+  });
+
+  it("with the outage flag set: says resting, reason outage, and spends nothing", async () => {
+    const h = await chatSetup({ ai });
+    await setOutage(h.db, "llm_auth", 1000);
+    const { socket, flux } = await open(h);
+    ask(flux, QUESTION);
+    await vi.waitFor(() => expect(types(socket)).toContain("error:resting"));
+    expect(socket.events().find((e) => e.type === "error" && e.code === "resting")).toMatchObject({ reason: "outage" });
+    expect(await h.spentToday()).toBe(0);
+    expect(h.data.get("turnsStarted") ?? 0).toBe(0);
+  });
+
+  it("a speech recognition failure raises voice_failed with the reason code, and nothing the visitor said", async () => {
+    const sent: { subject: string; text: string }[] = [];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = {
+      async run() {
+        throw new Error("Flux WebSocket upgrade failed: HTTP 429");
+      },
+    };
+    const vars = {
+      ALERT_TO: "owner@example.test",
+      ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+    } as unknown as Partial<Env>;
+    const h = await chatSetup({ ai: failing, vars });
+    await h.conversation.fetch(upgrade(h.token));
+    await vi.waitFor(() => expect(sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_failed"]));
+    expect(sent[0]?.text).toContain("stt_failed");
+  });
+
+  it("spends voice turns against the IP it upgraded from, together with that IP's text", async () => {
+    const h = await chatSetup({ ai, vars: { DAILY_TURNS_PER_IP: "1" } });
+    const { socket, flux } = await open(h);
+    ask(flux, QUESTION);
+    await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
+    expect(h.visitorCounts()).toEqual([1, 15]); // one turn, and the socket's first block of seconds
+    expect(await json(await h.conversation.fetch(chat(h.token, { message: "And before that?" })))).toEqual({
+      status: 503,
+      body: { error: "resting", reason: "visitor" },
+    });
+    expect(h.data.get("turnsStarted")).toBe(1);
   });
 });

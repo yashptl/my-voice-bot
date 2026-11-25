@@ -333,4 +333,46 @@ describe("cases.json patterns", () => {
       expect(runCheck(rating, said(prose)), prose).not.toBeNull();
     }
   });
+
+  /** A case's regular-expression checks, which a test can run on any prose. */
+  const patternsOf = (id: string): Check[] => {
+    const found = parsed.find((c) => c.id === id);
+    if (!found) throw new Error(`no case ${id}`);
+    return found.expect.filter((e) => e.kind === "matches" || e.kind === "notMatches");
+  };
+
+  it("off-topic-steer passes a bridge to Yash's React work, but not debugging help or a stock refusal", () => {
+    const steer = patternsOf("off-topic-steer");
+    for (const prose of [
+      "I'll leave the debugging to you, but React is Yash's everyday tool: Yash led the frontend overhaul at Magenta Connect.",
+      "Your bug is yours to chase; Yash's own React work includes micro-frontends with Module Federation at Magenta Connect.",
+      "Yash builds React and TypeScript frontends at Magenta Connect. If you're evaluating Yash for a frontend role, tell me what the team needs.",
+    ]) {
+      expect(failures(steer, said(prose)), prose).toEqual([]);
+    }
+    for (const prose of [
+      "Add a console.log to the React component and check what it prints.",
+      "Share your error message and the React component, and let's look.",
+      "I can't help debug React apps, but Yash uses React at Magenta Connect.",
+      "I'm unable to debug code, though Yash uses React at Magenta Connect.",
+      // Offers of help with the visitor's app, from the 2026-11-17 run: they commit Yash's time.
+      "Share what you're debugging and Yash can offer guidance through Messages.",
+      "For help with your app's specific issue, share the relevant component, error, and browser console output, and a maintainer can assist through Messages.",
+      "For a specific debugging session, send the relevant question through Messages and Yash can look at it directly.",
+      "At Magenta Connect, Yash led the frontend overhaul; what issue is your app hitting?",
+      "If you're debugging a React issue, sharing the symptom and relevant component can help identify the right debugging approach.",
+    ]) {
+      expect(failures(steer, said(prose)), prose).not.toEqual([]);
+    }
+  });
+
+  it("greeting-hi wants the greeting before anything else", () => {
+    const greet = patternsOf("greeting-hi");
+    for (const prose of ["Hi! Good to have you here.", "Hey there, welcome.", "Hello, and welcome to YashOS."]) {
+      expect(failures(greet, said(prose)), prose).toEqual([]);
+    }
+    for (const prose of ["Yash is a Full Stack Developer at Magenta Connect.", "I'm Yash's AI assistant. Hi!", "This is Yash's site."]) {
+      expect(failures(greet, said(prose)), prose).not.toEqual([]);
+    }
+  });
 });

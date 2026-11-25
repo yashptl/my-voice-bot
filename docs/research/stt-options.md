@@ -4,6 +4,8 @@ Why voice uses Deepgram Flux on Workers AI, what it costs, what else exists, and
 assistant fits Cloudflare's Workers Free plan. Prices and limits come from official pages (links
 at the end). **UNVERIFIED** marks what no official page states.
 
+Update 2026-11-25: Yash launches on Workers Free with voice capped at 780 s of listening a day; staging's 8 spoken answers had no errors.
+
 ## Decision
 
 - **Keep Flux on Workers AI** (`@cf/deepgram/flux`) for speech-to-text.

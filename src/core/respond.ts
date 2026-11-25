@@ -3,7 +3,7 @@ import { parseDataLine, parseRefsList, type DataLine, type DataLineStatus } from
 import type { GateReason, GateSummary, GroundingResult } from "../protocol/turn-record";
 import type { LlmPort, LlmRequest, LlmUsage, NeutralTurn } from "../ports/llm";
 import { checkGrounding } from "./grounding";
-import { GATE_FALLBACK, GateTally, gateSentence } from "./output-gate";
+import { EMPTY_FALLBACK, GATE_FALLBACK, GateTally, gateSentence } from "./output-gate";
 import { buildReminder, buildStable, buildTail, wrapVisitorMessage, type ReplyMode } from "./prompt";
 import { ReplySplitter } from "./reply-splitter";
 import { PRESSED_ANSWER } from "./rules";
@@ -99,8 +99,9 @@ function metaEvent(
  * sentence as soon as it is complete and through the output gate (ids from 0, counting only
  * sentences that passed; a dropped one is a content-free `gated` event), then `meta`, `usage`
  * (when the LLM reported it) and `done` with the shown prose, the gate summary and the grounding
- * check. When the gate dropped every sentence, GATE_FALLBACK is shown as sentence 0 before `meta`,
- * so the visitor never gets silence. Both modes run through here, so voice and text gate alike.
+ * check. When the gate dropped every sentence, GATE_FALLBACK is shown as sentence 0 before `meta`;
+ * when nothing was shown for any other reason (an empty reply, or only a data line), EMPTY_FALLBACK
+ * is, so the visitor never gets silence. Both modes run through here, so voice and text gate alike.
  *
  * Every visitor turn, earlier ones included, is sanitized and then wrapped in this request's
  * boundary, so RULES can say that all visitor words sit inside `<visitor_message>`. Sanitizing
@@ -122,6 +123,7 @@ export async function* respond(o: RespondOptions): AsyncIterable<RespondEvent> {
   const boundary = o.boundary ?? crypto.randomUUID();
   const visitor = (text: string): NeutralTurn => ({ role: "user", text: wrapVisitorMessage(sanitizeInput(text), boundary) });
   const message = sanitizeInput(o.message);
+  const visitorTurns = [...o.history.filter((t) => t.role === "user").map((t) => sanitizeInput(t.text)), message];
   const req: LlmRequest = {
     stable: buildStable(o.bundle),
     turns: [
@@ -141,7 +143,7 @@ export async function* respond(o: RespondOptions): AsyncIterable<RespondEvent> {
 
   /** The event for one sentence after the gate; null for a bare list marker that strips to nothing. */
   const gate = (sentence: string): RespondEvent | null => {
-    const result = gateSentence(sentence, message);
+    const result = gateSentence(sentence, visitorTurns.join("\n"));
     tally.add(result);
     if (result.blocked.length > 0) return { type: "gated", reasons: result.blocked };
     if (!result.text) return null;
@@ -182,14 +184,13 @@ export async function* respond(o: RespondOptions): AsyncIterable<RespondEvent> {
     if (event) yield event;
   }
   const gateSummary = tally.summary();
-  if (shown.length === 0 && gateSummary.dropped > 0) {
-    shown.push(GATE_FALLBACK);
+  if (shown.length === 0) {
+    const fallback = gateSummary.dropped > 0 ? GATE_FALLBACK : EMPTY_FALLBACK;
+    shown.push(fallback);
     check();
-    yield { type: "sentence", id: 0, text: GATE_FALLBACK };
+    yield { type: "sentence", id: 0, text: fallback };
   }
-  const visitorWroteRefs = [message, ...o.history.filter((t) => t.role === "user").map((t) => sanitizeInput(t.text))].some(
-    (text) => VISITOR_REFS.test(text),
-  );
+  const visitorWroteRefs = visitorTurns.some((text) => VISITOR_REFS.test(text));
   const meta = metaEvent(end, new Set(o.bundle.refs), !visitorWroteRefs, shown.join(" "));
   check();
   yield meta;

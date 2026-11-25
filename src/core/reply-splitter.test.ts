@@ -180,7 +180,7 @@ describe("ReplySplitter", () => {
 
     it("hides the list but keeps a later line that only starts like JSON as prose", () => {
       const reply = "Hi.\n<refs>role:magenta</refs>\n{curly} is a word";
-      expect(run([reply])).toEqual({ prose: "Hi.\n\n{curly} is a word", meta: null, refs: "role:magenta" });
+      expect(run([reply])).toEqual({ prose: "Hi.\n{curly} is a word", meta: null, refs: "role:magenta" });
     });
 
     it("is prose after all when words follow it, released as soon as they show", () => {
@@ -221,6 +221,48 @@ describe("ReplySplitter", () => {
     });
   });
 
+  describe("a trailing singular <ref> tag (seen in the 2026-11-16 evals, speak-as-yash run 3)", () => {
+    const PROSE = "I'm Yash's AI assistant. Yash can discuss start dates and availability directly through Messages. ";
+    const TAG = "<ref>doc:profile</ref>";
+
+    it.each([
+      ["the eval reply, then a data line on its own line", `${PROSE}${TAG}\n<meta>${META}</meta>`],
+      ["the eval reply, then a data line on the same line", `${PROSE}${TAG}<meta>${META}</meta>`],
+      ["an unclosed tag, then a data line", `${PROSE}<ref>doc:profile\n<meta>${META}</meta>`],
+      ["several tags, then a data line", `${PROSE}${TAG} <ref>role:magenta</ref>\n<meta>${META}</meta>`],
+    ])("is dropped before the data line, never prose: %s", (_name, reply) => {
+      for (let size = 1; size <= reply.length; size++) {
+        expect(run(chunk(reply, size)), `chunk size ${size}`).toEqual({ prose: PROSE, meta: META });
+      }
+    });
+
+    it.each([
+      ["the eval prose with no data line", `${PROSE}${TAG}`, "doc:profile"],
+      ["an unclosed tag", `${PROSE}<ref>doc:profile`, "doc:profile"],
+      ["a newline after it", `${PROSE}${TAG}\n`, "doc:profile"],
+      ["in capitals", `${PROSE}<REF>doc:profile</Ref>`, "doc:profile"],
+      ["several tags", `${PROSE}${TAG} <ref>role:magenta</ref>`, "doc:profile role:magenta"],
+      ["several tags, the last unclosed", `${PROSE}${TAG}\n<ref>role:magenta`, "doc:profile role:magenta"],
+    ])("is held back and returned as refs when no data line follows: %s", (_name, reply, refs) => {
+      for (let size = 1; size <= reply.length; size++) {
+        expect(run(chunk(reply, size)), `chunk size ${size}`).toEqual({ prose: PROSE, meta: null, refs });
+      }
+    });
+
+    it("never streams any part of the tag when split mid-tag", () => {
+      const splitter = new ReplySplitter();
+      const pushed = [`${PROSE}<re`, "f>doc:pro", "file</r", "ef>\n<me", `ta>${META}</meta>`].map((c) => splitter.push(c));
+      expect(pushed).toEqual([PROSE, "", "", "", ""]);
+      expect(splitter.end()).toEqual({ meta: META, prose: "" });
+    });
+
+    it("is prose after all when words follow it, released as soon as they show", () => {
+      const splitter = new ReplySplitter();
+      expect(splitter.push(`Hi. ${TAG}`)).toBe("Hi. ");
+      expect(splitter.push(" Want more?")).toBe(`${TAG} Want more?`);
+    });
+  });
+
   it("drops a <refs> list held just before a <meta> line from the prose", () => {
     const s = new ReplySplitter();
     const out = s.push("Hi.\n<refs>role:magenta</refs>\n<meta>{\"refs\":[]}</meta>");
@@ -234,5 +276,91 @@ describe("ReplySplitter", () => {
     const end = s.end();
     expect(out + end.prose).toBe("Yash builds agents.\nThen more words here.");
     expect(end.refs).toBe("role:magenta, skill:rag");
+  });
+});
+
+describe("ReplySplitter: a literal <meta> in prose", () => {
+  it("treats <meta> not followed by { as prose", () => {
+    const r = run(["Use the <meta> tag for SEO.\n", `<meta>${META}</meta>`]);
+    expect(r.prose).toBe("Use the <meta> tag for SEO.\n");
+    expect(r.meta).toBe(META);
+  });
+
+  it("decides across chunks: <meta> at the end of one chunk, { at the start of the next", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi.\n<meta>")).toBe("Hi.\n");
+    expect(splitter.push(`${META}</meta>`)).toBe("");
+    expect(splitter.end().meta).toBe(META);
+  });
+
+  it("holds <meta> plus whitespace until the next character shows", () => {
+    const splitter = new ReplySplitter();
+    expect(splitter.push("Hi. <meta> ")).toBe("Hi. ");
+    expect(splitter.push("tags matter.")).toBe("<meta> tags matter.");
+    expect(splitter.end()).toEqual({ meta: null, prose: "" });
+  });
+
+  it("releases a held <meta> as prose at the end of the reply", () => {
+    expect(run(["Use <meta>"])).toEqual({ prose: "Use <meta>", meta: null, refs: undefined });
+  });
+
+  it("gives the same result for every chunk size", () => {
+    const text = `Use the <meta> tag. It helps.\n<meta>${META}</meta>`;
+    for (let size = 1; size < text.length; size++) {
+      expect(run(chunk(text, size)), `chunk size ${size}`).toEqual({ prose: "Use the <meta> tag. It helps.\n", meta: META, refs: undefined });
+    }
+  });
+
+  it("keeps a missing closing tag working", () => {
+    expect(run([`Hi.\n<meta>${META}`])).toMatchObject({ prose: "Hi.\n", meta: META });
+  });
+});
+
+describe("ReplySplitter: <meta> before a fence, or at the start of a line", () => {
+  const FENCED = "```json" + META + "```";
+
+  it("starts the data line at <meta> followed by a code fence", () => {
+    expect(run(["Yash worked at Amazon.", `<meta>${FENCED}</meta>`])).toMatchObject({ prose: "Yash worked at Amazon.", meta: FENCED });
+  });
+
+  it("starts the data line at <meta> at the start of a line, whatever follows", () => {
+    expect(run(["Hi.\n<meta>refs: role:amazon; coverage: direct</meta>"])).toMatchObject({
+      prose: "Hi.\n",
+      meta: "refs: role:amazon; coverage: direct",
+    });
+    expect(run(["<meta>words</meta>"])).toMatchObject({ prose: "", meta: "words" });
+  });
+
+  it("keeps a mid-sentence <meta> before words as prose", () => {
+    expect(run(["Use the <meta> tag."]).prose).toBe("Use the <meta> tag.");
+  });
+
+  it("gives the same result for every chunk size", () => {
+    for (const text of [`Hi.<meta>${FENCED}</meta>`, "Hi.\n  <meta>refs: a</meta>", "Use <meta> tag.\n<meta>x</meta>"]) {
+      const whole = run([text]);
+      for (let size = 1; size < text.length; size++) expect(run(chunk(text, size)), `${size}: ${text}`).toEqual(whole);
+    }
+  });
+});
+
+describe("ReplySplitter: a ref-like string that never ends cleanly", () => {
+  // Fourteen segments is slow enough to fail a pattern that can match it many ways, yet still finishes.
+  const SLOW = "<refs>" + "aaaaa:".repeat(14) + "a!";
+
+  it("answers quickly and keeps all the text as prose when it ends the reply", () => {
+    const start = performance.now();
+    const out = run(["Hi.\n", SLOW]);
+    expect(performance.now() - start).toBeLessThan(250);
+    // The leading ref-shaped start is the hidden list; everything after it is prose.
+    expect(out.prose).toBe("Hi.\n" + SLOW.slice("<refs>aaaaa:aaaaa".length));
+  });
+
+  it("answers quickly and keeps all the text as prose before a <meta> line", () => {
+    const meta = '{"refs":[],"coverage":"none"}';
+    const start = performance.now();
+    const out = run(["Hi.\n", SLOW, `\n<meta>${meta}</meta>`]);
+    expect(performance.now() - start).toBeLessThan(250);
+    expect(out.prose).toContain(SLOW);
+    expect(out.meta).toBe(meta);
   });
 });

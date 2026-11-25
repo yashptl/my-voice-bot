@@ -1,5 +1,5 @@
 // Types for capture-worklet.js, which stays plain JS so the browser can load it as-is with
-// audioWorklet.addModule(). Only the tests import it as a module; mic.ts imports its URL.
+// audioWorklet.addModule(). Only the tests import it as a module; hosts pass its URL to the session as `workletUrl`.
 
 /** Low-pass filters and resamples to `outputRate`, then cuts Int16 frames of `frameSamples`. */
 export declare class Downsampler {

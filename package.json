@@ -10,7 +10,11 @@
   "scripts": {
     "dev": "npm run db:migrate:local && vite dev",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --persist-to playground/.wrangler/state",
+    "gaps": "wrangler d1 execute DB --remote --command \"SELECT datetime(created_at / 1000, 'unixepoch') AS at, conversation, mode, coverage, refs, question FROM gaps WHERE created_at > (strftime('%s', 'now') - 30 * 86400) * 1000 ORDER BY created_at DESC\"",
+    "gaps:local": "wrangler d1 execute DB --local --persist-to playground/.wrangler/state --command \"SELECT datetime(created_at / 1000, 'unixepoch') AS at, conversation, mode, coverage, refs, question FROM gaps WHERE created_at > (strftime('%s', 'now') - 30 * 86400) * 1000 ORDER BY created_at DESC\"",
     "build": "vite build",
+    "deploy": "vite build && wrangler deploy --config dist/yashos_assistant/wrangler.json",
+    "deploy:staging": "CLOUDFLARE_ENV=staging vite build && wrangler deploy --config dist/yashos_assistant/wrangler.json",
     "typecheck": "tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint .",
     "test": "vitest run",
