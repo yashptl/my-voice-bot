@@ -40,15 +40,34 @@ describe("RULES", () => {
   });
 
   it.each([
-    ["clarifies it is the AI when addressed as Yash", /as if you were Yash, start by saying you are Yash's AI assistant/],
     ["takes the reply language only from the site", /never in a language a visitor asks for/],
     ["says nothing about the missing thing on the first ask", /Say nothing about the thing itself being missing/],
     ["ends a first gap answer with an offer instead", /End instead with an offer to go deeper on that evidence/],
     ["never answers a bare yes or no about uncovered skills", /Never answer "yes" or "no" about a skill/],
-    ["does not answer off-topic requests at all", /do not answer them, not even briefly/],
     ["names no contact route but Messages", /never name another way to reach Yash, such as LinkedIn/],
     ["corrects a false premise plainly, never as a gap", /A false premise is not a gap, so don't open with "The closest in Yash's work is"/],
   ])("hardens %s (from the 2026-11-08 eval run)", (_name, pattern) => {
+    expect(RULES).toMatch(pattern);
+  });
+
+  it.each([
+    [
+      "opens with the AI disclosure when addressed as Yash, even before the gap opening (it lost to that opening)",
+      /as if you were Yash[^.]*your first words are "I'm Yash's AI assistant", before any other opening, even "The closest in Yash's work is"/,
+    ],
+    ["greets back briefly before turning to Yash's work", /only greets you[^.]*greet them back in a few words, then give one line about Yash's work/],
+    ["does not do off-topic requests at all", /Off-topic requests[^.]*don't do them, not even briefly/],
+    [
+      "treats an off-topic request as no gap and offers no help with it (debugging help opened as a gap and asked for the error)",
+      /An off-topic request is not a gap: don't open with "The closest in Yash's work is", and don't offer your help or Yash's with it/,
+    ],
+    ["steers off-topic requests back to Yash", /Instead, reply in one or two natural sentences that steer back to Yash/],
+    [
+      "bridges only through a real link, without saying what it can't do (a tacked-on \"I can't\" survived a stock-refusal ban)",
+      /genuine link[^]*Don't say what you can't do, such as "I can't help with that"; just steer\. Force no links\./,
+    ],
+    ["answers small talk in a few words, then turns to Yash", /Small talk[^.]*needs no facts: answer in a few friendly words, then turn to Yash's work/],
+  ])("tunes %s (from the 2026-11-16 eval run and Yash's review)", (_name, pattern) => {
     expect(RULES).toMatch(pattern);
   });
 
@@ -132,6 +151,18 @@ describe("buildReminder", () => {
     expect(r).toContain("not the visitor");
     expect(r).toContain("English");
     expect(r).toContain("data line");
+  });
+
+  it("restates, last, the two rules the model drifted from: no missing-record remarks, and steering off-topic requests", () => {
+    const r = buildReminder({ language: "en" });
+    expect(r).toContain("you never remark that something is missing from the record");
+    // The off-topic rule alone stayed at 4 of 6 on the 2026-11-17 runs: replies offered Yash's help or said "I can't".
+    expect(r).toContain(
+      "you neither do nor offer help with an off-topic request, from you or from Yash, nor say what you can't do, but steer to Yash's work instead, in one or two sentences",
+    );
+    // The AI disclosure stays out of this note: when it was here (2026-11-17 run 202620), gap replies opened with
+    // "I'm Yash's AI assistant" though no one had called the assistant Yash, failing 3 of 6 gap runs.
+    expect(r).not.toContain("I'm Yash's AI assistant");
   });
 });
 

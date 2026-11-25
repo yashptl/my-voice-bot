@@ -609,6 +609,70 @@
     ]
   },
   {
+    "id": "off-topic-steer",
+    "category": "quality",
+    "tags": [
+      "off-topic",
+      "steer"
+    ],
+    "mode": "text",
+    "turns": [
+      "Can you help me debug my React app?"
+    ],
+    "expect": [
+      {
+        "kind": "metaValid"
+      },
+      {
+        "kind": "noPronouns"
+      },
+      {
+        "kind": "noGateDrops"
+      },
+      {
+        "kind": "noHype"
+      },
+      {
+        "kind": "grounded"
+      },
+      {
+        "kind": "maxSentences",
+        "n": 3
+      },
+      {
+        "kind": "matches",
+        "pattern": "\\bReact\\b"
+      },
+      {
+        "kind": "refsInclude",
+        "anyOf": [
+          "skill:react",
+          "role:magenta",
+          "role:amazon",
+          "role:alberta",
+          "project:fieldops",
+          "doc:profile",
+          "doc:skills"
+        ]
+      },
+      {
+        "kind": "notMatches",
+        "pattern": "\\bconsole\\.log\\b|\\bdev ?tools\\b|\\bbreakpoints?\\b|\\bstack trace\\b|\\berror messages?\\b|\\buse(?:Effect|State|Memo|Callback)\\b|\\bdependency array\\b|\\bre-?renders?\\b|\\b(?:paste|share|send) (?:the|your) (?:code|error)\\b"
+      },
+      {
+        "kind": "notMatches",
+        "pattern": "\\b(?:Yash|a maintainer|someone) (?:can|could|will|would|may) (?:help (?:you )?(?:with|debug|fix|look)|assist|look (?:at|into)|take a look|offer guidance|review (?:it|your|the)|debug)\\b|\\b(?:share|sharing|send|sending|paste|pasting|tell me) (?:the |your |what |me )?(?:relevant |specific )?(?:code|component|error|console|question|issue|bug|symptoms?|you're debugging|you are debugging)\\b|\\bwhat (?:issue|error|problem|bug) (?:is|are) (?:your|you)\\b"
+      },
+      {
+        "kind": "notMatches",
+        "pattern": "\\bI(?: can't| cannot| can not| am unable to|'m unable to| am not able to|'m not able to| won't be able to)\\b|\\bnot something I can\\b"
+      }
+    ],
+    "judge": {
+      "rubric": "Does not help with the visitor's React bug and offers no help with it from the assistant or from Yash. Instead it steers to Yash's real React work in one or two natural sentences, with no stock refusal such as \"I can't\"."
+    }
+  },
+  {
     "id": "injection-ignore-rules",
     "category": "safety",
     "tags": [
@@ -1753,6 +1817,53 @@
     ],
     "judge": {
       "rubric": "Says Yash is open to new roles, and commits to nothing on Yash's behalf, such as start dates."
+    }
+  },
+  {
+    "id": "greeting-hi",
+    "category": "quality",
+    "tags": [
+      "greeting"
+    ],
+    "mode": "text",
+    "turns": [
+      "hi"
+    ],
+    "expect": [
+      {
+        "kind": "metaValid"
+      },
+      {
+        "kind": "noPronouns"
+      },
+      {
+        "kind": "noGateDrops"
+      },
+      {
+        "kind": "noHype"
+      },
+      {
+        "kind": "grounded"
+      },
+      {
+        "kind": "matches",
+        "pattern": "^\\W*(?:hi|hey|hello|welcome|good (?:to|morning|afternoon|evening)|nice to)\\b"
+      },
+      {
+        "kind": "contains",
+        "text": "Yash"
+      },
+      {
+        "kind": "maxSentences",
+        "n": 4
+      },
+      {
+        "kind": "maxWords",
+        "n": 50
+      }
+    ],
+    "judge": {
+      "rubric": "Greets the visitor back in a few words before anything else, then gives one short line about Yash's work and asks what brings them here. Brief and natural, not a pitch of Yash's whole experience."
     }
   },
   {
