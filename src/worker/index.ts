@@ -1,6 +1,7 @@
 import blueprint from "../../docs/design/assistant-blueprint.html?raw";
 import { SessionRequestSchema, tokenFromAuthorization, type SessionResponse } from "../protocol/chat";
 import { PROTOCOL_VERSION } from "../protocol/version";
+import { raiseAlert, reportVoiceUsedUp } from "./alerts";
 import { mintToken, parseToken, tokenFromProtocols } from "./auth";
 import { demoMode, missingConfig } from "./config";
 import { readJson } from "./conversation";
@@ -9,9 +10,10 @@ import { pruneGaps } from "./gap-log";
 import { pruneDays, pruneVisitors, restingReason, voiceRestingToday } from "./ledger";
 import { buildProviders, NotConfiguredError } from "./providers";
 import { pruneTurns } from "./turn-log";
-import { verifyTurnstile } from "./turnstile";
+import { turnstileBroken, verifyTurnstile } from "./turnstile";
 import { clientIp } from "./visitor";
 import { watch } from "./watch";
+import { weeklySummary } from "./weekly";
 
 export { Conversation } from "./conversation";
 
@@ -32,8 +34,12 @@ const rateLimited = () => json({ error: "rate_limited" }, 429, { "retry-after": 
  * `resting` says why the assistant rests for this visitor (the day's shared turns used, this visitor's
  * own used, or the ledger unreadable, which fails closed), or null; the client shows the static card. `mode` is "text" instead of "voice" while
  * voice rests for the day (its audio or speech ceiling, or this visitor's own audio seconds), so the client starts in text.
+ * Two alerts ride on it, each kept alive with `ctx.waitUntil` so the visitor never waits: `voice_resting`
+ * when voice rests (it checks the shared day itself, so a visitor who only used up their own raises
+ * nothing), and `visitors_blocked` when Turnstile fails on our side, which the hourly check cannot
+ * see because it skips Turnstile. A visitor's own bad or expired token raises nothing.
  */
-async function createSession(request: Request, env: Env): Promise<Response> {
+async function createSession(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (env.ASSISTANT_MODE === "off") return json({ error: "off" }, 503);
   const { success } = await env.RL_SESSION.limit({ key: clientIp(request) });
   if (!success) return rateLimited();
@@ -44,7 +50,9 @@ async function createSession(request: Request, env: Env): Promise<Response> {
   if (missingConfig(env).required.length > 0) return json({ error: "not_configured" }, 503);
   const check = await verifyTurnstile({ token: body.turnstile, secret, ip: request.headers.get("cf-connecting-ip") });
   if (!check.ok) {
-    console.warn(`turnstile refused: ${check.codes.join(", ") || "no codes"}`);
+    const codes = check.codes.join(", ") || "no codes";
+    console.warn(`turnstile refused: ${codes}`);
+    if (turnstileBroken(check.codes)) ctx.waitUntil(raiseAlert(env, "visitors_blocked", `turnstile: ${codes}`, log));
     return json({ error: "turnstile_failed" }, 403);
   }
 
@@ -55,6 +63,7 @@ async function createSession(request: Request, env: Env): Promise<Response> {
     restingReason(env, clientIp(request), log),
     env.ASSISTANT_MODE === "voice" && voiceRestingToday(env, clientIp(request), log),
   ]);
+  if (voiceResting) ctx.waitUntil(reportVoiceUsedUp(env, log));
   const mode = voiceResting ? "text" : env.ASSISTANT_MODE;
   const session: SessionResponse = { token, protocol: PROTOCOL_VERSION, mode, expiresAt, resting };
   return json(session);
@@ -134,11 +143,11 @@ function health(env: Env): Response {
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const { pathname } = new URL(request.url);
     switch (pathname) {
       case "/assistant/session":
-        return request.method === "POST" ? createSession(request, env) : notAllowed("POST");
+        return request.method === "POST" ? createSession(request, env, ctx) : notAllowed("POST");
       case "/assistant/chat":
         return request.method === "POST" ? chat(request, env) : notAllowed("POST");
       case "/assistant/voice":
@@ -155,10 +164,12 @@ export default {
   /**
    * Hourly (cron in wrangler.jsonc): the canary and its alerts (watch.ts), which log only outcomes,
    * never answer text; and retention, which deletes turn log and gap rows after 30 days, daily
-   * counts (the alert claims too) after 7, and per-visitor counts once their UTC day is over.
+   * counts (the alert claims too) after 7, and per-visitor counts once their UTC day is over. On
+   * Mondays from 03:00 UTC it also emails the weekly summary (weekly.ts).
    */
   scheduled(_controller, env, ctx): void {
     ctx.waitUntil(watch(env));
+    ctx.waitUntil(weeklySummary(env, log));
     ctx.waitUntil(prune(env.DB, Date.now()));
   },
 } satisfies ExportedHandler<Env>;

@@ -10,7 +10,7 @@ import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { WS_SUBPROTOCOL } from "../protocol/version";
 import { parseToken, tokenFromProtocols, verifySecret } from "./auth";
-import { raiseAlert, reportOutage } from "./alerts";
+import { raiseAlert, reportOutage, reportVoiceUsedUp } from "./alerts";
 import { ConversationState, type Log } from "./conversation-state";
 import type { Env } from "./env";
 import { recordGap, type Gap } from "./gap-log";
@@ -137,6 +137,7 @@ export class Conversation extends DurableObject<Env> {
       }
     };
     if (!audio) {
+      this.voiceRefused(log);
       // Voice rests for the day. Accepted first and told why: a browser hides a refused upgrade's status.
       send({ type: "error", code: "voice_resting", message: VOICE_RESTING_MESSAGE });
       closeQuietly(socket, 1008, "voice resting");
@@ -155,7 +156,11 @@ export class Conversation extends DurableObject<Env> {
       ledger: {
         spendTurn: async () => admitTurn(this.env, ip, log, { skipOutage: await this.isCanary() }),
         // Mic seconds are charged to the visitor as well as to everyone (ledger.ts reserveAudio).
-        reserve: (unit, n) => (unit === "voice_seconds" ? reserveAudio(this.env, ip, n, log) : reserve(this.env, unit, n, log)),
+        reserve: async (unit, n) => {
+          const day = await (unit === "voice_seconds" ? reserveAudio(this.env, ip, n, log) : reserve(this.env, unit, n, log));
+          if (day === null) this.voiceRefused(log);
+          return day;
+        },
         release: (unit, n, day) =>
           void (unit === "voice_seconds" ? releaseAudio(this.env, ip, n, day, log) : release(this.env, unit, n, day, log)),
       },
@@ -348,6 +353,15 @@ export class Conversation extends DurableObject<Env> {
   /** An alert raised from a visitor's conversation, kept alive past the response; raiseAlert reports its own failures. */
   private alert(kind: "voice_failed", reason: string, log: Log): void {
     this.ctx.waitUntil(raiseAlert(this.env, kind, reason, log));
+  }
+
+  /**
+   * A voice reservation was refused: raises `voice_resting` if the day's shared seconds or characters
+   * are what ran out, kept alive past the response. A visitor who only used up their own raises
+   * nothing, and a failed read is not taken for a used-up day (reportVoiceUsedUp).
+   */
+  private voiceRefused(log: Log): void {
+    this.ctx.waitUntil(reportVoiceUsedUp(this.env, log));
   }
 
   /** Whether this is the canary's conversation: it is admitted through an outage, to learn when the provider is back. */

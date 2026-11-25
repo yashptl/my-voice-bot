@@ -51,9 +51,9 @@ All counts are per UTC day and live in D1. If D1 can't be reached, the assistant
 | Mic audio per conversation | 600 s | voice: `error` `limit`, socket closes |
 | Model turns per visitor (client IP), text and voice | `DAILY_TURNS_PER_IP` = 60 | `/chat`: 503 `resting` with reason `visitor`; voice: `error` `resting` with reason `visitor`, socket closes |
 | Model turns, everyone | `DAILY_TURNS` = 400 | `/session` reports `resting` with its reason (`"ceiling"`, `"visitor"` or `"outage"`, or `null`), here `"ceiling"`; `/chat`: 503 `resting`; voice: `error` `resting`, socket closes |
-| Mic seconds sent to Flux, everyone | `DAILY_VOICE_SECONDS` = 1800, reserved 15 s at a time | voice rests: `/session` returns `mode: "text"`; an open socket gets `error` `voice_resting` and closes; text carries on |
+| Mic seconds sent to Flux, everyone | `DAILY_VOICE_SECONDS` = 780, reserved 15 s at a time | voice rests: `/session` returns `mode: "text"`; an open socket gets `error` `voice_resting` and closes; text carries on |
 | Characters sent to MiniMax speech, everyone | `DAILY_TTS_CHARS` = 60000, reserved 500 (one reply) at a time | voice rests, as above |
-| Mic seconds per visitor (client IP) | `DAILY_VOICE_SECONDS_PER_IP` = 600, reserved 15 s at a time with everyone's block | voice rests for that visitor, as for everyone's seconds, above |
+| Mic seconds per visitor (client IP) | `DAILY_VOICE_SECONDS_PER_IP` = 300, reserved 15 s at a time with everyone's block | voice rests for that visitor, as for everyone's seconds, above |
 | Spoken reply | 500 characters | sentences past it arrive with `spoken: false`: captions only, never spoken |
 
 The visitor is the client IP, kept only as an HMAC of the day and IP under `IP_HASH_KEY`, so D1 never holds a raw IP. A turn is counted for the conversation first, then the visitor and everyone together at once; any refusal gives the others back. Each 15 s block of mic audio is reserved from everyone's seconds and the visitor's own at once, under a second `daily_ip` row keyed by an HMAC that includes the unit; if either refuses, voice rests as above (at upgrade: the socket is accepted, gets `voice_resting` and closes 1008; `/session` says `mode: "text"` for that visitor), and the one that succeeded is given back. On close the unused part goes back to both, only to the same UTC day. `ASSISTANT_MODE` is `voice` by default, `text` turns voice off, and `off` refuses everything (503).
@@ -92,7 +92,7 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 
 **Outage flag.** One row in D1 that rests the assistant for every visitor. A turn that ends `llm_auth` or `llm_quota` sets it, and so do two failed canary runs in a row; the first reason is kept. A canary that passes clears it. One outage sends one email, however long it lasts and across UTC days. A canary skipped as resting leaves the flag as it was.
 
-**Alerts.** Every failure a visitor could have seen emails the owner through the `ALERT_EMAIL` binding, from `ALERT_FROM` to the `ALERT_TO` secret, at most once per kind per UTC day (claimed in `daily` as `alert:<kind>` before sending):
+**Alerts.** Every failure a visitor could have seen, and a few things that stop visitors before they start, email the owner through the `ALERT_EMAIL` binding, from `ALERT_FROM` to the `ALERT_TO` secret, at most once per kind per UTC day (claimed in `daily` as `alert:<kind>` before sending):
 
 | Kind | When |
 | --- | --- |
@@ -102,14 +102,17 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 | `slow` | the canary took more than 10 s end to end |
 | `resting` | the day's shared turns are used up |
 | `misconfigured` | required config is missing (names listed) |
+| `voice_resting` | the day's shared listening seconds or spoken characters are used up (a visitor who only used up their own raises nothing) |
+| `visitors_blocked` | Turnstile itself is failing on our side, so every visitor is refused: the codes are listed. A visitor's own bad or expired token raises nothing. The hourly check cannot see this because it skips Turnstile |
+| `weekly` | not a failure: a summary of the week to date (counts only), sent on Mondays from 03:00 UTC. It also shows the bot and its email are alive, so if it stops coming, something is down. It is sent even while the assistant is `off` |
 
-The body is the kind, the UTC time and the reason, never visitor text. Without `ALERT_TO` or the binding, a warning is logged instead; staging has no binding, so nothing is sent there. If sending fails the claim is given back, so the next hour tries again. If the claim itself fails (the database is down), the email is sent anyway and the failure logged: at most one an hour during an outage. An assistant switched `off` on purpose raises nothing.
+The body is the kind, the UTC time and the reason, never visitor text (the weekly summary holds counts only). Without `ALERT_TO` or the binding, a warning is logged instead; staging has no binding, so nothing is sent there. If sending fails the claim is given back, so the next hour tries again. If the claim itself fails (the database is down), the email is sent anyway and the failure logged: at most one an hour during an outage. An assistant switched `off` on purpose raises nothing.
 
 ## Deploying
 
 Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangler deploy`. The Vite plugin builds the Worker into `dist/yashos_assistant/` with its own `wrangler.json`, and the scripts deploy that file. Because Vite's root is `playground/`, the plugin's redirect file lands in `playground/.wrangler/deploy/`, where `wrangler` won't use it. Other `wrangler` commands (`secret put`, `d1 migrations apply`, `d1 execute`) read `wrangler.jsonc` directly; add `--env staging` for the staging copy.
 
-**Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, voice on, with ceilings of 100 answers, 1,200 s of listening and 30,000 spoken characters a day (and 600 s of listening per visitor), and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
+**Staging** is a separate Worker, `yashos-assistant-staging` on workers.dev, defined under `env.staging` in `wrangler.jsonc`. It has its own D1 database, Turnstile's test secret, voice on, with ceilings of 100 answers, 60 s of listening and 30,000 spoken characters a day (and 60 s of listening per visitor too), and no alert email. Anyone with its URL can use it, within those limits. Remove it with `npx wrangler delete --env staging`. `npm run gaps -- --env staging` reads its gap log.
 
 ### First production deploy
 
@@ -117,11 +120,11 @@ Production is one route, `yashos.dev/assistant/*` (in `wrangler.jsonc`), with no
 
 1. Create the database: `npx wrangler d1 create yashos-assistant`, then put the id it prints in `wrangler.jsonc` as `database_id` under `d1_databases`.
 2. Apply every migration, through `0007_flags.sql`: `npx wrangler d1 migrations apply DB --remote`. Until then the assistant rests, because the ledger fails closed.
-3. Set the required secret `TURNSTILE_SECRET`: `npx wrangler secret put TURNSTILE_SECRET`. It must be the secret paired with the site key YashOS uses for the assistant's widget, not the test one.
-4. Set the required secret `IP_HASH_KEY`: `openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY`.
-5. Set the required secret `MINIMAX_API_KEY`: `npx wrangler secret put MINIMAX_API_KEY`.
-6. Verify the alert address as a destination in Cloudflare Email Routing, and keep `yashos.dev` onboarded for sending (`ALERT_FROM` is `assistant@yashos.dev`).
-7. Set the optional secret `ALERT_TO` to that verified address: `npx wrangler secret put ALERT_TO`. Without it alerts are only logged.
+3. Set the required secret `TURNSTILE_SECRET`. The first `secret put` creates the Worker, which is why each one names it with `--name yashos-assistant`: `npx wrangler secret put TURNSTILE_SECRET --name yashos-assistant`. It must be the secret paired with the site key YashOS uses for the assistant's widget, not the test one.
+4. Set the required secret `IP_HASH_KEY`: `openssl rand -hex 32 | npx wrangler secret put IP_HASH_KEY --name yashos-assistant`.
+5. Set the required secret `MINIMAX_API_KEY`: `npx wrangler secret put MINIMAX_API_KEY --name yashos-assistant`.
+6. Verify the alert address as a destination in Cloudflare Email Routing. Email Routing on `yashos.dev` is enough; no Email Sending onboarding is needed (`ALERT_FROM` is `assistant@yashos.dev`).
+7. Set the optional secret `ALERT_TO` to that verified address: `npx wrangler secret put ALERT_TO --name yashos-assistant`. Without it alerts are only logged.
 8. Leave `ASSISTANT_DEMO` unset; it is for `.dev.vars` only.
 9. Deploy: `npm run deploy`.
 10. Check `https://yashos.dev/assistant/health` replies `ok: true` with nothing required missing: `curl -s https://yashos.dev/assistant/health`.
@@ -131,4 +134,4 @@ Production is one route, `yashos.dev/assistant/*` (in `wrangler.jsonc`), with no
 
 Also worth doing once: check the Rate Limiting binding works on the account's plan (an 11th `POST /assistant/session` from one IP within a minute should get `429`), and confirm the voice ceilings against the Workers AI and MiniMax dashboards.
 
-The account needs **Workers Paid** ($5 a month), because `ASSISTANT_MODE` is `voice` in `wrangler.jsonc`: on Free, Flux gets about 14 minutes a day, a voice socket is one invocation with 50 subrequests (about 17 to 25 spoken turns), and a cold turn can pass the 10 ms CPU limit. Details in [docs/research/stt-options.md](docs/research/stt-options.md). Confirm the voice ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.
+Production launches on Workers Free (decided 2026-11-25). Voice is capped at 780 s of listening a day because Workers AI's free allowance is about 857 s for the whole account (production, staging and local dev together). A single voice call can still fail after about 17 to 25 spoken turns (50 outside calls per invocation). Staging's hourly text check passed every hour from 12 to 24 November apart from provider errors, so the 10 ms CPU limit has not been a problem for text. Past the allowance the choices are Deepgram's own API or Workers Paid ($5 a month). Details in [docs/research/stt-options.md](docs/research/stt-options.md). Confirm the voice ceilings against the Workers AI and MiniMax dashboards; after the first live week, compare the Workers AI neurons with the sum of `audio_in_seconds` in `turns`.

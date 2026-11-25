@@ -10,11 +10,11 @@ export type LedgerUnit = "turns" | "voice_seconds" | "tts_chars";
 export type VoiceUnit = Exclude<LedgerUnit, "turns">;
 
 /** Each unit's daily ceiling when its var is missing; wrangler.jsonc sets the same values. */
-export const DEFAULT_CEILINGS: Readonly<Record<LedgerUnit, number>> = { turns: 400, voice_seconds: 1800, tts_chars: 60_000 };
+export const DEFAULT_CEILINGS: Readonly<Record<LedgerUnit, number>> = { turns: 400, voice_seconds: 780, tts_chars: 60_000 };
 /** Model turns per visitor (client IP) per day when DAILY_TURNS_PER_IP is missing. */
 export const DEFAULT_TURNS_PER_IP = 60;
 /** Mic seconds per visitor (client IP) per day when DAILY_VOICE_SECONDS_PER_IP is missing. */
-export const DEFAULT_VOICE_SECONDS_PER_IP = 600;
+export const DEFAULT_VOICE_SECONDS_PER_IP = 300;
 
 const CEILING_VARS = {
   turns: "DAILY_TURNS",
@@ -283,6 +283,23 @@ export async function voiceUnitResting(env: Env, unit: VoiceUnit, log: Log): Pro
   } catch (err) {
     logFailure(log, err);
     return true;
+  }
+}
+
+/**
+ * The first of `voice_seconds` and `tts_chars` with less than one reservation left today (UTC) for
+ * everyone, or null when neither. Null too when the read fails (logged), so a database failure is
+ * never reported as a used-up day.
+ */
+export async function voiceUsedUp(env: Env, log: Log): Promise<VoiceUnit | null> {
+  try {
+    const day = utcDay(Date.now());
+    const [seconds, chars] = await Promise.all([used(env.DB, "voice_seconds", day), used(env.DB, "tts_chars", day)]);
+    if (seconds + RESERVATION.voice_seconds > ceiling(env, "voice_seconds", log)) return "voice_seconds";
+    return chars + RESERVATION.tts_chars > ceiling(env, "tts_chars", log) ? "tts_chars" : null;
+  } catch (err) {
+    logFailure(log, err);
+    return null;
   }
 }
 

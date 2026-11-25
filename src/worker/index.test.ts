@@ -62,20 +62,25 @@ function setup(
     demo?: boolean;
     db?: D1Database;
     answer?: ServerEvent[];
+    /** Gives the Worker an alert address and binding; `sent` then holds the emails. */
+    alerts?: boolean;
   } = {},
 ) {
   const keys: string[] = [];
   const forwarded: Request[] = [];
   const inits: [string, number][] = [];
+  const sent: { subject: string; text: string }[] = [];
   const env = {
+    ALERT_TO: o.alerts ? "owner@example.test" : undefined,
+    ALERT_EMAIL: o.alerts ? { send: async (m: { subject: string; text: string }) => void sent.push(m) } : undefined,
     ASSISTANT_MODE: o.mode ?? "voice",
     LLM_PROFILE: "minimax-flash",
     TTS_VOICE: "English_FriendlyPerson",
     DAILY_TURNS: "400",
-    DAILY_VOICE_SECONDS: "1800",
+    DAILY_VOICE_SECONDS: "780",
     DAILY_TTS_CHARS: "60000",
     DAILY_TURNS_PER_IP: "60",
-    DAILY_VOICE_SECONDS_PER_IP: "600",
+    DAILY_VOICE_SECONDS_PER_IP: "300",
     TURNSTILE_SECRET: o.secret === null ? undefined : (o.secret ?? TURNSTILE_TEST_SECRET),
     IP_HASH_KEY: o.ipHashKey === null ? undefined : (o.ipHashKey ?? "test-key"),
     MINIMAX_API_KEY: o.minimaxKey === null ? undefined : (o.minimaxKey ?? "test-minimax-key"),
@@ -101,7 +106,7 @@ function setup(
     },
     DB: o.db ?? sqliteD1(),
   } as unknown as Env;
-  return { env, keys, forwarded, inits };
+  return { env, keys, forwarded, inits, sent };
 }
 
 /** Replaces global fetch with a fake siteverify; returns the forms it received. */
@@ -136,8 +141,14 @@ function chatRequest(authorization: string | null = `Bearer ${mintToken().token}
   });
 }
 
-const call = (request: Request, env: Env) =>
-  (worker.fetch as (r: Request, e: Env) => Promise<Response>)(request, env);
+/** Calls the Worker, then waits for whatever it kept alive with waitUntil, so alerts have been sent. */
+const call = async (request: Request, env: Env) => {
+  const waits: Promise<unknown>[] = [];
+  const ctx = { waitUntil: (p: Promise<unknown>) => void waits.push(p) } as unknown as ExecutionContext;
+  const res = await (worker.fetch as (r: Request, e: Env, x: ExecutionContext) => Promise<Response>)(request, env, ctx);
+  await Promise.all(waits);
+  return res;
+};
 const json = async (res: Response) => ({ status: res.status, body: (await res.json()) as Record<string, unknown> });
 
 afterEach(() => {
@@ -220,6 +231,50 @@ describe("POST /assistant/session", () => {
     const demo = setup({ minimaxKey: null, demo: true });
     fakeSiteverify({ success: true });
     expect((await call(sessionRequest(), demo.env)).status).toBe(200);
+  });
+
+  it("raises visitors_blocked when Turnstile fails on our side, naming the codes and nothing else", async () => {
+    const h = setup({ alerts: true });
+    fakeSiteverify({ success: false, "error-codes": ["invalid-input-secret"] });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await call(sessionRequest(), h.env)).status).toBe(403);
+    expect(h.sent.map((m) => m.subject)).toEqual(["Assistant alert: visitors_blocked"]);
+    expect(h.sent[0]?.text).toContain("turnstile: invalid-input-secret");
+    expect(h.sent[0]?.text).not.toContain(DUMMY_TOKEN);
+  });
+
+  it("says no codes when siteverify gave none", async () => {
+    const h = setup({ alerts: true });
+    fakeSiteverify({ success: false });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await call(sessionRequest(), h.env);
+    expect(h.sent[0]?.text).toContain("turnstile: no codes");
+  });
+
+  it("raises nothing for a visitor's bad, missing or expired token", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const code of ["invalid-input-response", "missing-input-response", "timeout-or-duplicate"]) {
+      const h = setup({ alerts: true });
+      fakeSiteverify({ success: false, "error-codes": [code] });
+      expect((await call(sessionRequest(), h.env)).status).toBe(403);
+      expect(h.sent, code).toEqual([]);
+    }
+  });
+
+  it("raises voice_resting when the day's shared voice is used up, and not when only this visitor's own is", async () => {
+    const db = sqliteD1();
+    await spend(db, "voice_seconds", 780, 780, utcDay(Date.now()));
+    const shared = setup({ db, alerts: true });
+    fakeSiteverify({ success: true });
+    expect((await json(await call(sessionRequest(), shared.env))).body).toMatchObject({ mode: "text" });
+    expect(shared.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]);
+    expect(shared.sent[0]?.text).toContain("the day's listening seconds are used up");
+
+    const own = setup({ db: sqliteD1(), alerts: true });
+    own.env.DAILY_VOICE_SECONDS_PER_IP = "30";
+    for (let i = 0; i < 2; i++) await reserveAudio(own.env, "203.0.113.7", 15, vi.fn());
+    expect((await json(await call(sessionRequest(), own.env))).body).toMatchObject({ mode: "text" });
+    expect(own.sent).toEqual([]);
   });
 
   it("refuses a token Turnstile rejects with 403, minting nothing", async () => {
@@ -312,7 +367,7 @@ describe("POST /assistant/session", () => {
 
   it("keeps mode text and off as they are", async () => {
     const db = sqliteD1();
-    await spend(db, "voice_seconds", 1800, 1800, utcDay(Date.now()));
+    await spend(db, "voice_seconds", 780, 780, utcDay(Date.now()));
     fakeSiteverify({ success: true });
     expect((await json(await call(sessionRequest(), setup({ db, mode: "text" }).env))).body.mode).toBe("text");
   });
@@ -473,6 +528,24 @@ describe("scheduled", () => {
     expect(db.sqlite.prepare("SELECT day FROM daily").all()).toEqual([{ day: utcDay(now) }]);
     expect(db.sqlite.prepare("SELECT day FROM daily_ip").all()).toEqual([{ day: utcDay(now) }]);
     expect(info).toHaveBeenCalledWith("retention: deleted 1 turns, 1 gaps, 1 daily counts and 1 visitor counts");
+  });
+
+  it("sends the weekly summary on a Monday morning, and nothing on other days", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const monday = setup({ answer: [], alerts: true });
+      vi.setSystemTime(Date.UTC(2026, 10, 30, 3, 17));
+      await run(monday.env);
+      expect(monday.sent.map((m) => m.subject)).toContain("Assistant weekly summary");
+      const tuesday = setup({ answer: [], alerts: true });
+      vi.setSystemTime(Date.UTC(2026, 11, 1, 3, 17));
+      await run(tuesday.env);
+      expect(tuesday.sent.map((m) => m.subject)).not.toContain("Assistant weekly summary");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("logs a retention failure without stopping the canary", async () => {

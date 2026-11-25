@@ -7,7 +7,7 @@ import { SseParser } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
 import { mintToken, parseToken } from "./auth";
 import type { Env } from "./env";
-import { used, utcDay, type LedgerUnit } from "./ledger";
+import { spend, used, utcDay, type LedgerUnit } from "./ledger";
 import { readOutage, setOutage } from "./outage-flag";
 import { LlmError, type LlmErrorKind } from "../ports/llm";
 
@@ -905,6 +905,51 @@ describe("Conversation voice socket", () => {
     expect(fluxes).toEqual([]);
     expect(await h.usedToday("voice_seconds")).toBe(0); // everyone's block was given back
     expect(h.visitorCounts()).toEqual([]); // a block bigger than the cap writes no row
+  });
+
+  describe("voice_resting alert", () => {
+    const alerts = () => {
+      const sent: { subject: string; text: string }[] = [];
+      const vars = {
+        ALERT_TO: "owner@example.test",
+        ALERT_EMAIL: { send: async (m: { subject: string; text: string }) => void sent.push(m) },
+      } as unknown as Partial<Env>;
+      return { sent, vars };
+    };
+
+    it("is raised when the first block is refused because the day's listening seconds are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_VOICE_SECONDS: "10" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+      expect(a.sent[0]?.text).toContain("the day's listening seconds are used up");
+    });
+
+    it("is raised when the day's spoken characters are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_TTS_CHARS: "400" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+      expect(a.sent[0]?.text).toContain("the day's spoken characters are used up");
+    });
+
+    it("is raised when a later reservation is refused during a conversation", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_TTS_CHARS: "500" } });
+      const { socket, flux } = await open(h);
+      await spend(h.db, "tts_chars", 1, 500, utcDay(Date.now())); // everyone else takes the last characters
+      ask(flux, QUESTION);
+      await vi.waitFor(() => expect(types(socket)).toContain("turn.end"), { timeout: 5000 });
+      await vi.waitFor(() => expect(a.sent.map((m) => m.subject)).toEqual(["Assistant alert: voice_resting"]));
+    });
+
+    it("is not raised when only this visitor's own seconds are used up", async () => {
+      const a = alerts();
+      const h = await chatSetup({ ai, vars: { ...a.vars, DAILY_VOICE_SECONDS_PER_IP: "10" } });
+      await h.conversation.fetch(upgrade(h.token));
+      await sleep(50);
+      expect(a.sent).toEqual([]);
+    });
   });
 
   it("reserves the first block from the visitor too, and gives the unused part of both back on close", async () => {

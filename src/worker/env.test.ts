@@ -25,14 +25,15 @@ describe("wrangler.jsonc vars", () => {
       DAILY_TURNS_PER_IP: String(DEFAULT_TURNS_PER_IP),
       DAILY_VOICE_SECONDS_PER_IP: String(DEFAULT_VOICE_SECONDS_PER_IP),
     });
-    expect(DEFAULT_CEILINGS).toEqual({ turns: 400, voice_seconds: 1800, tts_chars: 60_000 });
+    expect(DEFAULT_CEILINGS).toEqual({ turns: 400, voice_seconds: 780, tts_chars: 60_000 });
     expect(DEFAULT_TURNS_PER_IP).toBe(60);
-    expect(DEFAULT_VOICE_SECONDS_PER_IP).toBe(600);
+    expect(DEFAULT_VOICE_SECONDS_PER_IP).toBe(300);
   });
 
-  it("set the per-visitor voice cap in staging too", () => {
+  it("set the voice limits in staging to 60 s, shared and per visitor", () => {
     const staging = readFileSync("wrangler.jsonc", "utf8").split('"staging"')[1] ?? "";
-    expect(staging).toMatch(/"DAILY_VOICE_SECONDS_PER_IP": "600"/);
+    expect(staging).toMatch(/"DAILY_VOICE_SECONDS": "60"/);
+    expect(staging).toMatch(/"DAILY_VOICE_SECONDS_PER_IP": "60"/);
   });
 });
 

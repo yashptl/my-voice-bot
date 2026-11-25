@@ -22,9 +22,16 @@
     "bindings": [{ "name": "CONVERSATION", "class_name": "Conversation" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Conversation"] }],
-  // The day's shared ceilings and the turn log (schema in migrations/). No database_id: the first
-  // deploy creates the database. Locally, `npm run db:migrate:local` applies the migrations.
-  "d1_databases": [{ "binding": "DB", "database_name": "yashos-assistant", "migrations_dir": "migrations" }],
+  // The day's shared ceilings and the turn log (schema in migrations/). The id is an address, not a
+  // secret. Locally, `npm run db:migrate:local` applies the migrations.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yashos-assistant",
+      "database_id": "7175a355-cc5d-4237-8742-4e3a5d6e0486",
+      "migrations_dir": "migrations"
+    }
+  ],
   // Alert emails (src/worker/alerts.ts). No destination restriction: the binding can then send to any
   // verified destination address in the account, and the recipient is the ALERT_TO secret, so the
   // address never enters the repo. The sender below is on a domain onboarded to Email Service.
@@ -40,7 +47,9 @@
   // Never set ASSISTANT_DEMO here: "1" serves scripted demo replies and is for .dev.vars only.
   "vars": {
     // Voice is on at all times; the daily ceilings below cap what it costs. Past a voice ceiling,
-    // voice rests until midnight UTC and the assistant carries on in text. Needs Workers Paid.
+    // voice rests until midnight UTC and the assistant carries on in text. On Workers Free, Workers AI
+    // gives the whole account 10,000 neurons a day, about 857 s of Flux, so production's 780 plus
+    // staging's 60 stay under it. Local dev spends the same allowance.
     "ASSISTANT_MODE": "voice",
     "LLM_PROFILE": "minimax-flash",
     "TTS_VOICE": "English_FriendlyPerson",
@@ -51,14 +60,14 @@
     "DAILY_TURNS": "400",
     // Mic seconds sent to Flux, for everyone together, reserved 15 s at a time. Past it, or past
     // DAILY_TTS_CHARS, voice rests until midnight UTC and the assistant carries on in text.
-    "DAILY_VOICE_SECONDS": "1800",
+    "DAILY_VOICE_SECONDS": "780",
     // Characters sent to MiniMax speech, for everyone together, reserved 500 (one reply) at a time.
     "DAILY_TTS_CHARS": "60000",
     // Model turns per visitor (client IP), text and voice together, so one visitor can't use up the day.
     "DAILY_TURNS_PER_IP": "60",
     // Mic seconds per visitor (client IP), reserved with the global blocks above, so one visitor can't
     // use up the day's listening. Past it, voice rests for that visitor until midnight UTC.
-    "DAILY_VOICE_SECONDS_PER_IP": "600"
+    "DAILY_VOICE_SECONDS_PER_IP": "300"
   },
   "observability": { "enabled": true },
   // A test copy on workers.dev, for measuring from Cloudflare's network and rehearsing deploys.
@@ -90,10 +99,10 @@
         "LLM_PROFILE": "minimax-flash",
         "TTS_VOICE": "English_FriendlyPerson",
         "DAILY_TURNS": "100",
-        "DAILY_VOICE_SECONDS": "1200",
+        "DAILY_VOICE_SECONDS": "60",
         "DAILY_TTS_CHARS": "30000",
         "DAILY_TURNS_PER_IP": "60",
-        "DAILY_VOICE_SECONDS_PER_IP": "600",
+        "DAILY_VOICE_SECONDS_PER_IP": "60",
         "ALERT_FROM": "assistant@yashos.dev"
       }
     }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { sqliteD1 } from "../../tests/sqlite-d1";
-import { raiseAlert, reportOutage, type AlertKind } from "./alerts";
+import { raiseAlert, reportOutage, reportVoiceUsedUp, type AlertKind } from "./alerts";
 import type { Env } from "./env";
-import { used, utcDay } from "./ledger";
+import { spend, used, utcDay } from "./ledger";
 import { readOutage, setOutage } from "./outage-flag";
 
 const NOW = Date.UTC(2026, 10, 11, 14, 5, 9);
@@ -109,9 +109,19 @@ describe("raiseAlert", () => {
     expect(h.sent).toEqual([]);
   });
 
-  it("covers the six kinds", async () => {
+  it("covers the nine kinds", async () => {
     const h = setup();
-    const kinds: AlertKind[] = ["outage", "answer_failed", "voice_failed", "slow", "resting", "misconfigured"];
+    const kinds: AlertKind[] = [
+      "outage",
+      "answer_failed",
+      "voice_failed",
+      "slow",
+      "resting",
+      "misconfigured",
+      "voice_resting",
+      "visitors_blocked",
+      "weekly",
+    ];
     for (const k of kinds) expect(await raiseAlert(h.env, k, "r", h.log, NOW)).toBe("sent");
   });
 });
@@ -173,5 +183,44 @@ describe("reportOutage", () => {
     await reportOutage(h.env, "ledger unavailable", h.log, NOW);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]?.text).toContain("ledger unavailable");
+  });
+});
+
+describe("reportVoiceUsedUp", () => {
+  it("raises voice_resting naming the listening seconds when they are used up", async () => {
+    const h = setup();
+    (h.env as { DAILY_VOICE_SECONDS?: string }).DAILY_VOICE_SECONDS = "10";
+    await reportVoiceUsedUp(h.env, h.log, NOW);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.subject).toBe("Assistant alert: voice_resting");
+    expect(h.sent[0]?.text).toContain("the day's listening seconds are used up");
+  });
+
+  it("names the spoken characters when those are used up", async () => {
+    const h = setup();
+    await spend(h.db, "tts_chars", 59_900, 60_000, utcDay(Date.now())); // the ledger reads the real clock
+    await reportVoiceUsedUp(h.env, h.log, NOW);
+    expect(h.sent[0]?.text).toContain("the day's spoken characters are used up");
+  });
+
+  it("sends nothing while voice has room, and nothing more than once a day", async () => {
+    const h = setup();
+    await reportVoiceUsedUp(h.env, h.log, NOW);
+    expect(h.sent).toEqual([]);
+    (h.env as { DAILY_VOICE_SECONDS?: string }).DAILY_VOICE_SECONDS = "10";
+    await reportVoiceUsedUp(h.env, h.log, NOW);
+    await reportVoiceUsedUp(h.env, h.log, NOW + 60_000);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  it("sends nothing and does not throw when the database fails", async () => {
+    const h = setup();
+    (h.env as { DB: unknown }).DB = {
+      prepare() {
+        throw new Error("D1 unavailable");
+      },
+    };
+    await expect(reportVoiceUsedUp(h.env, h.log, NOW)).resolves.toBeUndefined();
+    expect(h.sent).toEqual([]);
   });
 });

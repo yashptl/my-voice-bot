@@ -72,7 +72,7 @@ Not covered: Anthropic. The `anthropic-haiku` profile runs only in the probes, a
 | D1 `daily_ip` (voice) | Mic seconds reserved per visitor per day, in the same table under a key that also includes the unit: HMAC-SHA256 of `<day>\|<client IP>\|voice_seconds` with the same secret. No raw IP; no migration | No | Deleted once its UTC day ends |
 | Worker logs | Status codes, error codes, counts. By rule never visitor or answer text, keys or addresses | No | Per Workers Logs retention |
 
-Alert emails (kind, UTC time, reason code) never contain visitor text. Yash reads the gap log with `npm run gaps`.
+Alert emails (kind, UTC time, reason code) never contain visitor text, and the weekly summary holds counts only. Yash reads the gap log with `npm run gaps`.
 
 ## What the visitor disclosure can truthfully say
 

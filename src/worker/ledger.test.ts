@@ -21,6 +21,7 @@ import {
   utcDay,
   voiceRestingToday,
   voiceSecondsPerIp,
+  voiceUsedUp,
 } from "./ledger";
 import { visitorKey } from "./visitor";
 
@@ -198,7 +199,7 @@ describe("ceiling and turnsPerIp", () => {
   it("use the default when the var is missing", () => {
     const log = vi.fn();
     expect(ceiling(env({}), "turns", log)).toBe(400);
-    expect(ceiling(env({}), "voice_seconds", log)).toBe(1800);
+    expect(ceiling(env({}), "voice_seconds", log)).toBe(780);
     expect(ceiling(env({}), "tts_chars", log)).toBe(60_000);
     expect(turnsPerIp(env({}), log)).toBe(60);
     expect(log).not.toHaveBeenCalled();
@@ -553,9 +554,9 @@ describe("voiceRestingToday", () => {
 const voiceKeyRows = (db: ReturnType<typeof sqliteD1>) => visitorRows(db).map((r) => ({ day: r.day, used: r.used }));
 
 describe("voiceSecondsPerIp", () => {
-  it("is 600 when missing, the number when whole, and 0 with an error logged when invalid", () => {
+  it("is 300 when missing, the number when whole, and 0 with an error logged when invalid", () => {
     const log = vi.fn();
-    expect(voiceSecondsPerIp({} as Env, log)).toBe(600);
+    expect(voiceSecondsPerIp({} as Env, log)).toBe(300);
     expect(voiceSecondsPerIp({ DAILY_VOICE_SECONDS_PER_IP: " 90 " } as Env, log)).toBe(90);
     expect(voiceSecondsPerIp({ DAILY_VOICE_SECONDS_PER_IP: 90 as unknown as string } as Env, log)).toBe(90);
     expect(log).not.toHaveBeenCalled();
@@ -662,5 +663,39 @@ describe("voiceRestingToday for a visitor", () => {
     const log = vi.fn();
     expect(await voiceRestingToday(envOf(sqliteD1(), { IP_HASH_KEY: "" }), IP, log)).toBe(true);
     expect(log).toHaveBeenCalledWith("error", "ledger failed: IP_HASH_KEY is not set");
+  });
+});
+
+describe("voiceUsedUp", () => {
+  it("is null while a 15 s block and a reply's 500 characters are both left for everyone", async () => {
+    expect(await voiceUsedUp(envOf(sqliteD1()), vi.fn())).toBeNull();
+  });
+
+  it("names voice_seconds once less than one audio block is left, and tts_chars once less than one reply's speech", async () => {
+    const seconds = sqliteD1();
+    await spend(seconds, "voice_seconds", 6, 780, utcDay(Date.now()));
+    expect(await voiceUsedUp(envOf(seconds, { DAILY_VOICE_SECONDS: "21" }), vi.fn())).toBeNull();
+    expect(await voiceUsedUp(envOf(seconds, { DAILY_VOICE_SECONDS: "20" }), vi.fn())).toBe("voice_seconds");
+    const chars = sqliteD1();
+    await spend(chars, "tts_chars", 100, 60_000, utcDay(Date.now()));
+    expect(await voiceUsedUp(envOf(chars, { DAILY_TTS_CHARS: "600" }), vi.fn())).toBeNull();
+    expect(await voiceUsedUp(envOf(chars, { DAILY_TTS_CHARS: "599" }), vi.fn())).toBe("tts_chars");
+  });
+
+  it("names the seconds first when both are used up", async () => {
+    expect(await voiceUsedUp(envOf(sqliteD1(), { DAILY_VOICE_SECONDS: "0", DAILY_TTS_CHARS: "0" }), vi.fn())).toBe("voice_seconds");
+  });
+
+  it("ignores one visitor's own seconds", async () => {
+    const db = sqliteD1();
+    const env = envOf(db, { DAILY_VOICE_SECONDS_PER_IP: "10" });
+    expect(await reserveAudio(env, IP, 15, vi.fn())).toBeNull();
+    expect(await voiceUsedUp(env, vi.fn())).toBeNull();
+  });
+
+  it("is null, with the failure logged, when the database fails: a read error is not a used-up day", async () => {
+    const log = vi.fn();
+    expect(await voiceUsedUp(envOf(brokenDb()), log)).toBeNull();
+    expect(log).toHaveBeenCalledWith("error", "ledger failed: D1 unavailable");
   });
 });

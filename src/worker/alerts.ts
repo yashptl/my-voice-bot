@@ -1,14 +1,26 @@
 import type { Env } from "./env";
 import type { Log } from "./conversation-state";
-import { refund, spend, utcDay } from "./ledger";
+import { refund, spend, utcDay, voiceUsedUp } from "./ledger";
 import { markOutageAlerted, readOutage, setOutage } from "./outage-flag";
 
 /**
  * What an alert email is about: `outage` the provider failing for good (the assistant rests),
  * `answer_failed` an answer a visitor or the canary saw fail, `voice_failed` speech that broke,
- * `slow` a slow canary, `resting` the day's turns used up, `misconfigured` missing config.
+ * `slow` a slow canary, `resting` the day's turns used up, `misconfigured` missing config,
+ * `voice_resting` the day's listening seconds or spoken characters used up, `visitors_blocked`
+ * Turnstile itself failing so every visitor is refused, and `weekly` the weekly summary (counts
+ * only, which also shows the bot and its email are alive).
  */
-export type AlertKind = "outage" | "answer_failed" | "voice_failed" | "slow" | "resting" | "misconfigured";
+export type AlertKind =
+  | "outage"
+  | "answer_failed"
+  | "voice_failed"
+  | "slow"
+  | "resting"
+  | "misconfigured"
+  | "voice_resting"
+  | "visitors_blocked"
+  | "weekly";
 
 /**
  * Emails the owner, at most once per kind per UTC day. The day's claim is `alert:<kind>` with
@@ -25,6 +37,45 @@ export async function raiseAlert(
   reason: string,
   log: Log,
   now: number = Date.now(),
+): Promise<"sent" | "already" | "unsent" | "failed"> {
+  return sendClaimed(
+    env,
+    kind,
+    `Assistant alert: ${kind}`,
+    `Alert: ${kind}\nTime (UTC): ${new Date(now).toISOString()}\nReason: ${reason}\n`,
+    log,
+    now,
+  );
+}
+
+/** Emails the weekly summary (weekly.ts), once per UTC day, under the same claim and refund rules as an alert. */
+export function sendWeeklySummary(env: Env, text: string, log: Log, now: number): Promise<"sent" | "already" | "unsent" | "failed"> {
+  return sendClaimed(env, "weekly", "Assistant weekly summary", text, log, now);
+}
+
+/** Raises `voice_resting` when the day's shared listening seconds or spoken characters are used up. Never throws. */
+export async function reportVoiceUsedUp(env: Env, log: Log, now: number = Date.now()): Promise<void> {
+  try {
+    const unit = await voiceUsedUp(env, log);
+    if (unit === null) return;
+    const what = unit === "voice_seconds" ? "listening seconds" : "spoken characters";
+    await raiseAlert(env, "voice_resting", `the day's ${what} are used up`, log, now);
+  } catch (err) {
+    log("error", `voice alert failed: ${message(err)}`);
+  }
+}
+
+/**
+ * Claims `alert:<kind>` for the UTC day, then sends one email with `subject` and `text`. What
+ * `raiseAlert` documents about claiming, refunding and logging applies to every kind.
+ */
+async function sendClaimed(
+  env: Env,
+  kind: AlertKind,
+  subject: string,
+  text: string,
+  log: Log,
+  now: number,
 ): Promise<"sent" | "already" | "unsent" | "failed"> {
   const to = env.ALERT_TO?.trim();
   const binding = env.ALERT_EMAIL;
@@ -46,8 +97,8 @@ export async function raiseAlert(
     await binding.send({
       to,
       from: env.ALERT_FROM?.trim() || "assistant@yashos.dev",
-      subject: `Assistant alert: ${kind}`,
-      text: `Alert: ${kind}\nTime (UTC): ${new Date(now).toISOString()}\nReason: ${reason}\n`,
+      subject,
+      text,
     });
     return "sent";
   } catch (err) {
