@@ -32,8 +32,8 @@ const HYPE =
  */
 const MARKDOWN: [RegExp, string][] = [
   // The reply's own markup is never shown or spoken, whatever the splitter let through.
-  [/<refs>[^<]*<\/refs>/gi, ""],
-  [/<\/?(?:refs|meta)\s*>/gi, ""],
+  [/<refs?>[^<]*<\/refs?>/gi, ""],
+  [/<\/?(?:refs?|meta)\s*>/gi, ""],
   [/^#+(?:\s+|$)/, ""],
   [/^(?:[-*•]|\d{1,2}\.)(?:\s+|$)/, ""],
   [/\*\*(.+?)\*\*/g, "$1"],

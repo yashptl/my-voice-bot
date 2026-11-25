@@ -4,24 +4,41 @@ const OPEN = "<meta>";
 const OPEN_RE = /<meta>/gi;
 const CLOSE = "</meta>";
 const CLOSE_RE = /<\/meta>/i;
-/** A bare list of refs that some replies end with instead of the data line. */
-const REFS_OPEN = "<refs>";
-const REFS_RE = /<refs>/i;
-/** A held `<refs>` list that ends the reply, with or without its closing tag: group 1 is the list. */
-const REFS_TAIL = /^<refs>\s*((?:[a-z]+:[a-z0-9-]+[\s,;]*)*)(?:<\/refs>)?\s*$/i;
-/** The ref-shaped start of a held `<refs>` list, closed or not, with whatever follows left out. */
-const REFS_LEAD = /^<refs>\s*((?:[a-z]+:[a-z0-9-]+[\s,;]*)*)(?:<\/refs>)?/i;
-/** A `<refs>` list (closed or not) at the very end of the prose before a `<meta>` line. */
-const REFS_BEFORE_META = /<refs>\s*(?:[a-z]+:[a-z0-9-]+[\s,;]*)*(?:<\/refs>)?\s*$/i;
 /**
- * A held `<refs>` list that is closed and then followed by visible text that cannot start a data
+ * A bare list of refs that some replies end with instead of the data line: `<refs>a, b</refs>`, or
+ * one or several `<ref>a</ref>` tags. Any tag may be left unclosed.
+ */
+const REFS_OPEN = "<refs>";
+const REFS_RE = /<refs?>/i;
+/**
+ * What follows a ref list's first tag: refs, separators and more `<refs>` or `<ref>` tags, open or
+ * closing. Two refs must have a separator between them, so a string has only one way to match and
+ * the pattern cannot blow up on a long run of ref-like text that ends badly.
+ */
+const REF_SEP = String.raw`(?:[\s,;]|<\/?refs?>)`;
+const REF_LIST = String.raw`${REF_SEP}*(?:[a-z]+:[a-z0-9-]+(?:${REF_SEP}+[a-z]+:[a-z0-9-]+)*${REF_SEP}*)?`;
+/** A held ref list that ends the reply: group 1 is the list, tags and all. */
+const REFS_TAIL = new RegExp(`^<refs?>(${REF_LIST})$`, "i");
+/** The ref-shaped start of a held ref list, with whatever follows left out: group 1 is the list. */
+const REFS_LEAD = new RegExp(`^<refs?>(${REF_LIST})`, "i");
+/** A ref list at the very end of the prose before a `<meta>` line. */
+const REFS_BEFORE_META = new RegExp(`<refs?>${REF_LIST}$`, "i");
+/** The tags inside a ref list, with the whitespace around them. */
+const REFS_TAGS = /(?:\s*<\/?refs?>\s*)+/gi;
+/**
+ * A held ref list that is closed and then followed by visible text that cannot start a data
  * line or a tag (`{`, a backtick or `<`): words, so the list was prose after all. The match ends
  * where those words start.
  */
-const REFS_THEN_WORDS = /^<refs>[^<]*<\/refs>\s*(?=[^\s{`<])/i;
-const REFS_START = /^<refs>/i;
-/** The tags a held-back suffix may be the start of; both are 6 characters. */
+const REFS_THEN_WORDS = /^<refs?>[^<]*<\/refs?>\s*(?=[^\s{`<])/i;
+const REFS_START = /^<refs?>/i;
+/** The tags a held-back suffix may be the start of; both are 6 characters, and `<ref>` starts like `<refs>`. */
 const OPENERS = [OPEN, REFS_OPEN];
+
+/** A ref list's refs, as `end` returns them: its tags taken out. */
+function refsOf(list: string): string {
+  return list.replace(REFS_TAGS, " ").trim();
+}
 
 /** A line whose first visible character is one of these may be a data line written without tags. */
 const CANDIDATE_START = /^[ \t]*[{`]/;
@@ -110,9 +127,10 @@ function bareDataLine(held: string): string | null {
  * it is the data line, otherwise it is released as prose (late, but never lost). A `<meta>` tag
  * arriving after it releases it as prose straight away.
  *
- * Rarely, a model ends with a bare `<refs>role:a, role:b</refs>` list instead of the data line. It
- * is held the same way, from the `<refs>` tag on (also mid-line, and a partial `<refs` tag is held
- * back like a partial `<meta`): if nothing but whitespace follows it, `end` returns the list as
+ * Rarely, a model ends with a bare `<refs>role:a, role:b</refs>` list instead of the data line, or
+ * with `<ref>role:a</ref>` tags, one or several. Either is held the same way, from its first tag on
+ * (also mid-line, and a partial `<ref` tag is held back like a partial `<meta`). A list just before
+ * the data line is dropped from the prose. If nothing but whitespace follows it, `end` returns the list as
  * `refs`, never as prose, so the visitor neither sees nor hears it. If a tagless data line follows
  * it, that is the data line and the list stays hidden. If words follow its closing tag, it was
  * prose after all and is released as soon as they show.
@@ -192,7 +210,7 @@ export class ReplySplitter {
   /**
    * Ends the reply. `meta` is the trimmed text between `<meta>` and `</meta>` (or the end when the
    * closing tag is missing), or a held tagless data line, or null when no data line arrived. `refs`
-   * is set only when, instead, the reply ended with a bare `<refs>` list: the trimmed list. `prose`
+   * is set only when, instead, the reply ended with a bare ref list: its refs, without the tags. `prose`
    * is any held-back text that turned out to be neither; append it to what `push` returned.
    */
   end(): { meta: string | null; prose: string; refs?: string } {
@@ -216,10 +234,10 @@ export class ReplySplitter {
       return { meta: data, prose: REFS_TAIL.test(before) ? "" : before };
     }
     const refs = REFS_TAIL.exec(held)?.[1];
-    if (refs !== undefined) return { meta: null, prose: "", refs: refs.trim() };
+    if (refs !== undefined) return { meta: null, prose: "", refs: refsOf(refs) };
     // An unclosed list followed by sentences: the list stays hidden, the sentences are prose.
     const lead = REFS_START.test(held) ? REFS_LEAD.exec(held) : null;
-    const list = lead?.[1]?.trim();
+    const list = refsOf(lead?.[1] ?? "");
     if (lead && list) return { meta: null, prose: held.slice(lead[0].length), refs: list };
     return { meta: null, prose: held };
   }

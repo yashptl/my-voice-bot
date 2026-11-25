@@ -187,6 +187,12 @@ describe("GATE_FALLBACK", () => {
     expect(r.blocked).toEqual([]);
     expect(gateSentence("</meta> Yash builds agents.", "").text).toBe("Yash builds agents.");
   });
+
+  it("never shows or speaks a singular <ref> tag either, and flags it", () => {
+    expect(gateSentence("<ref>doc:profile</ref>", "")).toEqual({ text: "", blocked: [], flags: ["markdown"] });
+    expect(gateSentence("Yash worked at Amazon. <ref>role:amazon</ref>", "").text).toBe("Yash worked at Amazon.");
+    expect(gateSentence("Yash builds agents. <ref>", "").text).toBe("Yash builds agents.");
+  });
 });
 
 describe("gateSentence: product names and split numbers", () => {

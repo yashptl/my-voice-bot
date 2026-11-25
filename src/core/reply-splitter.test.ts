@@ -180,7 +180,7 @@ describe("ReplySplitter", () => {
 
     it("hides the list but keeps a later line that only starts like JSON as prose", () => {
       const reply = "Hi.\n<refs>role:magenta</refs>\n{curly} is a word";
-      expect(run([reply])).toEqual({ prose: "Hi.\n\n{curly} is a word", meta: null, refs: "role:magenta" });
+      expect(run([reply])).toEqual({ prose: "Hi.\n{curly} is a word", meta: null, refs: "role:magenta" });
     });
 
     it("is prose after all when words follow it, released as soon as they show", () => {
@@ -218,6 +218,48 @@ describe("ReplySplitter", () => {
       const splitter = new ReplySplitter();
       expect(splitter.push("see <ref")).toBe("see ");
       expect(splitter.push("erence> here.")).toBe("<reference> here.");
+    });
+  });
+
+  describe("a trailing singular <ref> tag (seen in the 2026-11-16 evals, speak-as-yash run 3)", () => {
+    const PROSE = "I'm Yash's AI assistant. Yash can discuss start dates and availability directly through Messages. ";
+    const TAG = "<ref>doc:profile</ref>";
+
+    it.each([
+      ["the eval reply, then a data line on its own line", `${PROSE}${TAG}\n<meta>${META}</meta>`],
+      ["the eval reply, then a data line on the same line", `${PROSE}${TAG}<meta>${META}</meta>`],
+      ["an unclosed tag, then a data line", `${PROSE}<ref>doc:profile\n<meta>${META}</meta>`],
+      ["several tags, then a data line", `${PROSE}${TAG} <ref>role:magenta</ref>\n<meta>${META}</meta>`],
+    ])("is dropped before the data line, never prose: %s", (_name, reply) => {
+      for (let size = 1; size <= reply.length; size++) {
+        expect(run(chunk(reply, size)), `chunk size ${size}`).toEqual({ prose: PROSE, meta: META });
+      }
+    });
+
+    it.each([
+      ["the eval prose with no data line", `${PROSE}${TAG}`, "doc:profile"],
+      ["an unclosed tag", `${PROSE}<ref>doc:profile`, "doc:profile"],
+      ["a newline after it", `${PROSE}${TAG}\n`, "doc:profile"],
+      ["in capitals", `${PROSE}<REF>doc:profile</Ref>`, "doc:profile"],
+      ["several tags", `${PROSE}${TAG} <ref>role:magenta</ref>`, "doc:profile role:magenta"],
+      ["several tags, the last unclosed", `${PROSE}${TAG}\n<ref>role:magenta`, "doc:profile role:magenta"],
+    ])("is held back and returned as refs when no data line follows: %s", (_name, reply, refs) => {
+      for (let size = 1; size <= reply.length; size++) {
+        expect(run(chunk(reply, size)), `chunk size ${size}`).toEqual({ prose: PROSE, meta: null, refs });
+      }
+    });
+
+    it("never streams any part of the tag when split mid-tag", () => {
+      const splitter = new ReplySplitter();
+      const pushed = [`${PROSE}<re`, "f>doc:pro", "file</r", "ef>\n<me", `ta>${META}</meta>`].map((c) => splitter.push(c));
+      expect(pushed).toEqual([PROSE, "", "", "", ""]);
+      expect(splitter.end()).toEqual({ meta: META, prose: "" });
+    });
+
+    it("is prose after all when words follow it, released as soon as they show", () => {
+      const splitter = new ReplySplitter();
+      expect(splitter.push(`Hi. ${TAG}`)).toBe("Hi. ");
+      expect(splitter.push(" Want more?")).toBe(`${TAG} Want more?`);
     });
   });
 
@@ -298,5 +340,27 @@ describe("ReplySplitter: <meta> before a fence, or at the start of a line", () =
       const whole = run([text]);
       for (let size = 1; size < text.length; size++) expect(run(chunk(text, size)), `${size}: ${text}`).toEqual(whole);
     }
+  });
+});
+
+describe("ReplySplitter: a ref-like string that never ends cleanly", () => {
+  // Fourteen segments is slow enough to fail a pattern that can match it many ways, yet still finishes.
+  const SLOW = "<refs>" + "aaaaa:".repeat(14) + "a!";
+
+  it("answers quickly and keeps all the text as prose when it ends the reply", () => {
+    const start = performance.now();
+    const out = run(["Hi.\n", SLOW]);
+    expect(performance.now() - start).toBeLessThan(250);
+    // The leading ref-shaped start is the hidden list; everything after it is prose.
+    expect(out.prose).toBe("Hi.\n" + SLOW.slice("<refs>aaaaa:aaaaa".length));
+  });
+
+  it("answers quickly and keeps all the text as prose before a <meta> line", () => {
+    const meta = '{"refs":[],"coverage":"none"}';
+    const start = performance.now();
+    const out = run(["Hi.\n", SLOW, `\n<meta>${meta}</meta>`]);
+    expect(performance.now() - start).toBeLessThan(250);
+    expect(out.prose).toContain(SLOW);
+    expect(out.meta).toBe(meta);
   });
 });
