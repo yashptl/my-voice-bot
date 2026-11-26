@@ -116,7 +116,7 @@ Deploy with `npm run deploy` (or `npm run deploy:staging`), never a bare `wrangl
 
 ### First production deploy
 
-Production is one route, `yashos.dev/assistant/*` (in `wrangler.jsonc`), with no workers.dev or preview URL; the site's own Worker serves everything else. Run these once, in order:
+Production is two routes, `yashos.dev/assistant/*` and `www.yashos.dev/assistant/*` (in `wrangler.jsonc`), with no workers.dev or preview URL; the site's own Worker serves everything else. Run these once, in order:
 
 1. Create the database (done on 2026-11-25, and its id is in `wrangler.jsonc`, so only for a rebuild): `npx wrangler d1 create yashos-assistant`, then put the id it prints in `wrangler.jsonc` as `database_id` under `d1_databases`.
 2. Apply every migration, through `0007_flags.sql`: `npx wrangler d1 migrations apply DB --remote`. Until then the assistant rests, because the ledger fails closed.

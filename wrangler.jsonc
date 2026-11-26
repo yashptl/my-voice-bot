@@ -5,11 +5,15 @@
   "compatibility_date": "2026-11-07",
   // Request.signal aborts on client disconnect; on by default only from 2026-11-17.
   "compatibility_flags": ["enable_request_signal"],
-  // The only door in production: this Worker answers yashos.dev/assistant/* and the site's own Worker
-  // serves everything else. The pattern does not match the bare /assistant, which the site handles.
+  // The only doors in production: this Worker answers yashos.dev/assistant/* and the same path on www
+  // (the site serves both hosts), and the site's own Worker serves everything else. The patterns do not
+  // match the bare /assistant, which the site handles.
   // No workers.dev or preview URL, so there is no second address to find. Staging overrides all three
   // below, because routes and workers_dev are inherited.
-  "routes": [{ "pattern": "yashos.dev/assistant/*", "zone_name": "yashos.dev" }],
+  "routes": [
+    { "pattern": "yashos.dev/assistant/*", "zone_name": "yashos.dev" },
+    { "pattern": "www.yashos.dev/assistant/*", "zone_name": "yashos.dev" }
+  ],
   "workers_dev": false,
   "preview_urls": false,
   "assets": {
