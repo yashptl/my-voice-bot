@@ -13,6 +13,7 @@ import type { ClientMessage, ErrorCode, RestingReason, ServerEvent } from "../pr
 import { MAX_TRANSCRIPT_CHARS } from "../protocol/limits";
 import type { GateSummary, GroundingResult, Mark, TurnRecord } from "../protocol/turn-record";
 import { PROTOCOL_VERSION } from "../protocol/version";
+import { SPEECH_OUTPUT_FAILED, VOICE_CLOSE } from "../protocol/voice";
 import { MIC_BYTES_PER_SECOND, type ConversationState, type Log } from "./conversation-state";
 import { LLM_IDLE_MS, LLM_TOTAL_MS, STOPPED, within, withDeadlines } from "./deadlines";
 import type { Gap } from "./gap-log";
@@ -289,7 +290,7 @@ export class VoiceLoop {
     if (this.current) return this.armIdle(limit); // an answer is running: not idle
     if (idleFor < limit) return this.armIdle(limit - idleFor);
     this.o.log?.("info", `closing the voice socket after ${Math.round(idleFor / 1000)} s without audio`);
-    this.end(CLOSE_NORMAL, "idle");
+    this.end(CLOSE_NORMAL, VOICE_CLOSE.idle);
   }
 
   /**
@@ -309,7 +310,7 @@ export class VoiceLoop {
     switch (this.o.state.addAudio(frame.byteLength)) {
       case "limit":
         this.send({ type: "error", code: "limit", message: "This conversation has used its audio allowance." });
-        return this.end(CLOSE_POLICY, "audio limit");
+        return this.end(CLOSE_POLICY, VOICE_CLOSE.audioLimit);
       case "too_fast":
         this.droppedFrames++;
         if (!this.tooFastReported) {
@@ -509,7 +510,7 @@ export class VoiceLoop {
     this.o.log?.("error", `stt failed: ${e.message}`);
     this.o.onVoiceFailure?.("stt_failed");
     this.send({ type: "error", code: "provider", message: "Speech recognition stopped. Please reconnect." });
-    this.end(CLOSE_PROVIDER, "speech recognition failed");
+    this.end(CLOSE_PROVIDER, VOICE_CLOSE.speechRecognitionFailed);
   }
 
   private onSttEvent(e: SttEvent): void {
@@ -548,7 +549,7 @@ export class VoiceLoop {
     // Counted now, with no await before it, so a text answer cannot take the conversation's last turn too.
     if (!this.o.state.startTurn()) {
       this.send({ type: "error", code: "limit", message: "This conversation has reached its question limit." });
-      return this.end(CLOSE_POLICY, "turn limit");
+      return this.end(CLOSE_POLICY, VOICE_CLOSE.turnLimit);
     }
     if (this.current) this.interrupt(this.current, null);
 
@@ -777,7 +778,7 @@ export class VoiceLoop {
     t.error ??= error;
     this.o.log?.("error", `tts failed: ${e.message}`);
     this.o.onVoiceFailure?.(error);
-    this.sendError("provider", "Speech output failed; the answer continues as text.");
+    this.sendError("provider", SPEECH_OUTPUT_FAILED);
   }
 
   private sendError(code: ErrorCode, message: string, reason?: RestingReason): void {

@@ -1,4 +1,5 @@
 import type { AudioFormat } from "../protocol/audio";
+import { Meter, type LevelSource } from "./levels";
 
 /** Jitter cushion before the first chunk after the queue runs dry. */
 const LEAD_MS = 80;
@@ -20,6 +21,13 @@ export interface PlaybackContext {
   readonly destination: object;
   createBuffer(channels: number, length: number, sampleRate: number): PlaybackBuffer;
   createBufferSource(): PlaybackSource;
+  createGain(): PlaybackGain;
+  createAnalyser(): LevelSource & { connect(destination: object): unknown };
+}
+
+export interface PlaybackGain {
+  readonly gain: { value: number };
+  connect(destination: object): unknown;
 }
 
 export interface PlaybackBuffer {
@@ -36,9 +44,12 @@ export interface PlaybackSource {
 
 /**
  * Gapless playback of streamed voice chunks (PCM s16le mono). Chunks are scheduled back to back on
- * the context clock; each sentence is reported when its first chunk starts playing.
+ * the context clock; a sentence is reported when its audio starts playing: its first chunk, and
+ * again the first chunk after the queue ran dry. Output: source -> gain -> analyser -> destination.
  */
 export class Player {
+  private readonly gain: PlaybackGain;
+  private readonly meter: Meter;
   private readonly sources = new Set<PlaybackSource>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private queuedUntil = 0;
@@ -50,7 +61,13 @@ export class Player {
   constructor(
     private readonly ctx: PlaybackContext,
     private readonly format: AudioFormat,
-  ) {}
+  ) {
+    this.gain = ctx.createGain();
+    const analyser = ctx.createAnalyser();
+    this.gain.connect(analyser);
+    analyser.connect(ctx.destination);
+    this.meter = new Meter(analyser);
+  }
 
   /** Queues one chunk. `pcm` may be a view at any offset (decodeAudioFrame returns offset 4). */
   enqueue(sentenceId: number, pcm: Uint8Array): void {
@@ -62,9 +79,10 @@ export class Player {
     const view = new DataView(pcm.buffer, pcm.byteOffset, samples * 2);
     for (let i = 0; i < samples; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
 
+    const resuming = this.sources.size === 0;
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(this.ctx.destination);
+    source.connect(this.gain);
     source.addEventListener("ended", () => {
       // Chunks ended by stop() were already forgotten and must not report idle.
       if (!this.sources.delete(source)) return;
@@ -76,7 +94,7 @@ export class Player {
     this.sources.add(source);
     this.queuedUntil = startAt + samples / this.format.sampleRate;
 
-    if (sentenceId !== this.queuedSentenceId) {
+    if (sentenceId !== this.queuedSentenceId || resuming) {
       this.queuedSentenceId = sentenceId;
       const timer = setTimeout(
         () => {
@@ -100,6 +118,16 @@ export class Player {
     this.queuedUntil = 0;
     this.queuedSentenceId = null;
     this.lastStarted = null;
+  }
+
+  /** Muted plays on silently: timing, `ended` events and the reports behave as if audible. */
+  setMuted(muted: boolean): void {
+    this.gain.gain.value = muted ? 0 : 1;
+  }
+
+  /** Fills `out` with the output's band levels, 0 to 1 (zeros while muted). Allocates nothing. */
+  readLevels(out: Float32Array): void {
+    this.meter.read(out);
   }
 
   onSentenceStarted(fn: (sentenceId: number) => void): void {

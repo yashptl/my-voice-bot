@@ -3,14 +3,18 @@ import type { SessionResponse } from "../protocol/chat";
 import type { ServerEvent } from "../protocol/events";
 import { encodeSse } from "../protocol/sse";
 import type { TurnRecord } from "../protocol/turn-record";
-import { VOICE_FORMAT } from "../protocol/audio";
+import { encodeAudioFrame, VOICE_FORMAT } from "../protocol/audio";
 import { PROTOCOL_VERSION } from "../protocol/version";
+import { SPEECH_OUTPUT_FAILED } from "../protocol/voice";
 import { AssistantSession, type AssistantSnapshot } from "./assistant-session";
 import { DISCLOSURE } from "./disclosure";
-import { startMic } from "./mic";
+import { startMic, type Mic } from "./mic";
 import { FakeAudioContext, FakeWebSocket } from "./testing";
 
-vi.mock("./mic", () => ({ startMic: vi.fn(async () => ({ stop: vi.fn(), setMuted: vi.fn() })) }));
+vi.mock("./mic", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./mic")>()),
+  startMic: vi.fn(async () => ({ stop: vi.fn(), setMuted: vi.fn(), readLevels: vi.fn((out: Float32Array) => out.fill(0.5)) })),
+}));
 
 const BASE = "https://yashos.dev/assistant";
 const RECORD = { turnId: "t1", interrupted: false, error: null, coverage: "direct" } as unknown as TurnRecord;
@@ -68,6 +72,7 @@ let chatCalls: { token: string; message: string }[];
 let sessionCalls: number;
 let sessionOff: boolean;
 let sockets: FakeWebSocket[];
+let contexts: FakeAudioContext[];
 
 const fakeFetch = vi.fn<typeof fetch>(async (input, init) => {
   const url = String(input);
@@ -119,11 +124,23 @@ beforeEach(() => {
   sessionCalls = 0;
   sessionOff = false;
   sockets = [];
+  contexts = [];
   fakeFetch.mockClear();
-  vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.stubGlobal(
+    "AudioContext",
+    class extends FakeAudioContext {
+      constructor() {
+        super();
+        contexts.push(this);
+      }
+    },
+  );
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("DISCLOSURE", () => {
   it("is the agreed text", () => {
@@ -888,18 +905,19 @@ describe("voice", () => {
     await until(() => sockets.length === 1);
     sockets[0]!.serverClose(1006);
     await starting;
-    expect(s.snapshot.voice.state).toBe("off");
+    expect(s.snapshot.voice).toMatchObject({ state: "off", ended: "connect" });
     expect(s.snapshot.notice).toMatch(/couldn't connect/i);
   });
 
   it("turns voice off with a notice when the microphone is refused", async () => {
-    vi.mocked(startMic).mockRejectedValueOnce(new Error("denied"));
+    vi.mocked(startMic).mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"));
     const { s } = await voiceReady();
     await until(() => s.snapshot.voice.state === "off");
     expect(s.snapshot.notice).toMatch(/microphone/i);
+    expect(s.snapshot.voice.ended).toBe("mic_blocked");
   });
 
-  it("treats a missing worklet URL like a blocked microphone, and leaves text alone", async () => {
+  it("treats a missing worklet URL as a mic failure, not a blocked mic, and leaves text alone", async () => {
     vi.mocked(startMic).mockClear();
     sessionTemplate = { mode: "voice" };
     const s = new AssistantSession({
@@ -920,6 +938,7 @@ describe("voice", () => {
     await starting;
     await until(() => s.snapshot.voice.state === "off");
     expect(s.snapshot.notice).toMatch(/microphone/i);
+    expect(s.snapshot.voice.ended).toBe("mic");
     expect(startMic).not.toHaveBeenCalled();
   });
 
@@ -929,5 +948,402 @@ describe("voice", () => {
     await s.startVoice();
     expect(sockets).toHaveLength(0);
     expect(s.snapshot.voice.state).toBe("off");
+  });
+});
+
+describe("the voice view", () => {
+  const READY = { type: "ready", protocol: PROTOCOL_VERSION, mode: "voice", audio: VOICE_FORMAT };
+  /** One 10 ms audio chunk for `sentenceId`. */
+  const audio = (sentenceId: number) => encodeAudioFrame(sentenceId, new Uint8Array(480));
+
+  async function voiceReady() {
+    sessionTemplate = { mode: "voice" };
+    const s = make();
+    await s.start();
+    const starting = s.startVoice();
+    await until(() => sockets.length === 1);
+    const ws = sockets[0]!;
+    ws.open();
+    await starting;
+    ws.receive(READY);
+    return { s, ws };
+  }
+
+  /** A turn whose first sentence's audio is playing (fake timers from here on). */
+  async function speaking() {
+    const { s, ws } = await voiceReady();
+    vi.useFakeTimers();
+    ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+    ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+    ws.receive({ type: "sentence", turnId: "t1", id: 1, text: "Two." });
+    ws.receive({ type: "state", state: "speaking" });
+    ws.receive(audio(0));
+    ws.receive(audio(1));
+    vi.advanceTimersByTime(85); // sentence 0 started at 80 ms, sentence 1 starts at 90 ms
+    return { s, ws, answer: () => s.snapshot.messages[1]! };
+  }
+
+  const lastMic = async () => (await vi.mocked(startMic).mock.results.at(-1)!.value) as Mic;
+
+  it("starts with voice off and nothing playing", () => {
+    expect(make().snapshot.voice).toEqual({ state: "off", transcript: "", mic: "off", followUp: false, playing: null, ended: null });
+  });
+
+  describe("playing", () => {
+    it("names the answer and the sentence whose audio is playing", async () => {
+      const { s, answer } = await speaking();
+      expect(s.snapshot.voice.playing).toEqual({ messageId: answer().id, sentenceId: 0 });
+      vi.advanceTimersByTime(10);
+      expect(s.snapshot.voice.playing).toEqual({ messageId: answer().id, sentenceId: 1 });
+    });
+
+    it("clears when the speaker drains", async () => {
+      const { s } = await speaking();
+      contexts[0]!.sources[0]!.end();
+      contexts[0]!.sources[1]!.end();
+      expect(s.snapshot.voice.playing).toBeNull();
+    });
+
+    it.each(["interrupt", "stopVoice", "turn"] as const)("clears on %s", async (end) => {
+      const { s, ws } = await speaking();
+      if (end === "turn") ws.receive({ type: "turn.start", turnId: "t2", question: "q2" });
+      else s[end]();
+      expect(s.snapshot.voice.playing).toBeNull();
+    });
+
+    it("maps a later turn's sentence ids, which restart, to that turn's answer", async () => {
+      const { s, ws } = await speaking();
+      ws.receive({ type: "turn.end", turnId: "t1", record: RECORD });
+      ws.receive({ type: "turn.start", turnId: "t2", question: "q2" });
+      ws.receive(audio(0));
+      vi.advanceTimersByTime(80);
+      expect(s.snapshot.voice.playing).toEqual({ messageId: s.snapshot.messages[3]!.id, sentenceId: 0 });
+    });
+  });
+
+  describe("heardThrough", () => {
+    it("is absent on an answer that was not cut off", async () => {
+      const { ws, answer } = await speaking();
+      ws.receive({ type: "turn.end", turnId: "t1", record: RECORD });
+      expect(answer()).not.toHaveProperty("heardThrough");
+    });
+
+    it("is the last sentence that started when the visitor interrupts", async () => {
+      const { s, answer } = await speaking();
+      s.interrupt();
+      expect(answer()).toMatchObject({ heardThrough: 0, stopped: true });
+    });
+
+    it("is null when the answer was cut off before any sentence started", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      ws.receive({ type: "state", state: "thinking" });
+      s.interrupt();
+      expect(s.snapshot.messages[1]).toMatchObject({ heardThrough: null, stopped: true });
+    });
+
+    it("is set by talk() over a reply still playing after its turn ended, and turn.interrupted overrides it", async () => {
+      const { s, ws, answer } = await speaking();
+      ws.receive({ type: "turn.end", turnId: "t1", record: RECORD });
+      ws.receive({ type: "state", state: "listening" });
+      await s.talk();
+      expect(ws.sentJson).toContainEqual({ type: "interrupt", turnId: "t1", lastHeardSentenceId: 0 });
+      expect(answer().heardThrough).toBe(0);
+      ws.receive({ type: "turn.interrupted", turnId: "t1", lastHeardSentenceId: 1, record: { ...RECORD, interrupted: true } });
+      expect(answer()).toMatchObject({ heardThrough: 1, stopped: true });
+    });
+  });
+
+  describe("mic and followUp", () => {
+    it("follow the mic: live on talk, muted while the reply plays, then the listening window, then off", async () => {
+      const { s, ws } = await voiceReady();
+      await until(() => s.snapshot.voice.mic === "live");
+      expect(s.snapshot.voice.followUp).toBe(false);
+      vi.useFakeTimers();
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      ws.receive({ type: "state", state: "speaking" });
+      ws.receive(audio(0));
+      expect(s.snapshot.voice.mic).toBe("muted");
+      ws.receive({ type: "state", state: "listening" });
+      contexts[0]!.sources[0]!.end();
+      vi.advanceTimersByTime(150);
+      expect(s.snapshot.voice).toMatchObject({ mic: "live", followUp: true });
+      vi.advanceTimersByTime(8000);
+      expect(s.snapshot.voice).toMatchObject({ mic: "off", followUp: false });
+    });
+  });
+
+  describe("talk", () => {
+    it("interrupts a reply that is playing and goes live again", async () => {
+      const { s, ws } = await speaking();
+      const calls = vi.mocked(startMic).mock.calls.length;
+      await s.talk();
+      expect(ws.sentJson).toContainEqual({ type: "interrupt", turnId: "t1", lastHeardSentenceId: 0 });
+      expect(vi.mocked(startMic).mock.calls.length).toBe(calls + 1);
+      expect(s.snapshot.voice).toMatchObject({ mic: "live", playing: null });
+    });
+
+    it("reopens voice on the same session after the server's idle close, inside the click", async () => {
+      const { s } = await voiceReady();
+      sockets[0]!.serverClose(1000, "idle");
+      expect(s.snapshot.voice).toMatchObject({ state: "off", ended: "idle" });
+      expect(contexts[0]?.closed).toBe(true);
+      const talking = s.talk();
+      expect(contexts).toHaveLength(2); // created before the first await
+      expect(s.snapshot.voice).toMatchObject({ state: "connecting", ended: null });
+      await until(() => sockets.length === 2);
+      expect(sockets[1]!.protocols).toEqual(sockets[0]!.protocols);
+      sockets[1]!.open();
+      await talking;
+      expect(s.snapshot.voice).toMatchObject({ state: "listening", mic: "live", ended: null });
+      expect(sessionCalls).toBe(1);
+    });
+
+    it("reopens voice when pressed while the server's close is still in flight", async () => {
+      const { s } = await voiceReady();
+      await until(() => s.snapshot.voice.mic === "live");
+      sockets[0]!.readyState = FakeWebSocket.CLOSING; // the close event has not fired yet
+      const talking = s.talk();
+      expect(contexts).toHaveLength(2); // still inside the click
+      await until(() => sockets.length === 2);
+      sockets[1]!.open();
+      await talking;
+      sockets[0]!.serverClose(1000, "idle"); // the old socket's close, late, changes nothing
+      expect(s.snapshot.voice).toMatchObject({ state: "listening", mic: "live", ended: null });
+      expect(s.snapshot.notice).toBeNull();
+    });
+
+    it("starts voice when it was never started", async () => {
+      sessionTemplate = { mode: "voice" };
+      const s = make();
+      await s.start();
+      const talking = s.talk();
+      await until(() => sockets.length === 1);
+      sockets[0]!.open();
+      await talking;
+      expect(s.snapshot.voice).toMatchObject({ state: "listening", mic: "live" });
+    });
+
+    it("while voice is connecting, resolves once that connection's mic is up", async () => {
+      sessionTemplate = { mode: "voice" };
+      const s = make();
+      await s.start();
+      void s.startVoice();
+      await until(() => sockets.length === 1);
+      let done = false;
+      const talking = s.talk().then(() => (done = true));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(done).toBe(false);
+      sockets[0]!.open();
+      await talking;
+      expect(sockets).toHaveLength(1);
+      expect(s.snapshot.voice.mic).toBe("live");
+    });
+
+    it("never rejects: a mic that cannot start ends voice and says why", async () => {
+      const { s } = await voiceReady();
+      vi.mocked(startMic).mockRejectedValueOnce(new DOMException("none", "NotFoundError"));
+      await expect(s.talk()).resolves.toBeUndefined();
+      expect(s.snapshot.voice).toMatchObject({ state: "off", ended: "mic_missing" });
+      expect(s.snapshot.notice).toMatch(/microphone/i);
+    });
+
+    it("does nothing in text mode", async () => {
+      const s = make();
+      await s.start();
+      await s.talk();
+      expect(sockets).toHaveLength(0);
+      expect(contexts).toHaveLength(0);
+    });
+  });
+
+  describe("pauseTalking", () => {
+    it("mutes the mic until the turn starts, then turns it off, with no listening window after the answer", async () => {
+      const { s, ws } = await voiceReady();
+      await until(() => s.snapshot.voice.mic === "live");
+      vi.useFakeTimers();
+      s.pauseTalking();
+      expect(s.snapshot.voice.mic).toBe("muted");
+      expect((await lastMic()).setMuted).toHaveBeenLastCalledWith(true);
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      expect(s.snapshot.voice.mic).toBe("off");
+      ws.receive({ type: "state", state: "speaking" });
+      ws.receive(audio(0));
+      ws.receive({ type: "state", state: "listening" });
+      contexts[0]!.sources[0]!.end();
+      vi.advanceTimersByTime(60_000);
+      expect(s.snapshot.voice).toMatchObject({ mic: "off", followUp: false });
+    });
+
+    it("turns the mic off after 6 s when nothing was said", async () => {
+      const { s } = await voiceReady();
+      await until(() => s.snapshot.voice.mic === "live");
+      vi.useFakeTimers();
+      s.pauseTalking();
+      vi.advanceTimersByTime(6000);
+      expect(s.snapshot.voice.mic).toBe("off");
+      expect(s.snapshot.voice.state).toBe("listening"); // the socket stays open
+    });
+
+    it("let go while voice is connecting, applies once the mic goes live", async () => {
+      sessionTemplate = { mode: "voice" };
+      const s = make();
+      await s.start();
+      const talking = s.talk();
+      await until(() => sockets.length === 1);
+      s.pauseTalking();
+      sockets[0]!.open();
+      await talking;
+      expect(s.snapshot.voice.mic).toBe("muted");
+    });
+  });
+
+  describe("ended", () => {
+    it.each([
+      [1000, "idle", "idle"],
+      [1011, "speech recognition failed", "listening"],
+      [1008, "turn limit", "limit"],
+      [1008, "audio limit", "limit"],
+      [1000, "session expired", "dropped"],
+      [4000, "replaced by a newer connection", "dropped"],
+      [1000, "conversation deleted", "dropped"],
+      [1011, "start failed", "dropped"],
+      [1006, "", "dropped"],
+    ] as const)("reads the close %i %j as %s, with the notice as before", async (code, reason, ended) => {
+      const { s, ws } = await voiceReady();
+      ws.serverClose(code, reason);
+      expect(s.snapshot.voice).toMatchObject({ state: "off", ended });
+      expect(s.snapshot.notice).toBe("Voice disconnected. You can keep typing, or start voice again.");
+    });
+
+    it("is limit after a limit error and its close", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "error", code: "limit", message: "This conversation has reached its question limit." });
+      ws.serverClose(1008, "turn limit");
+      expect(s.snapshot.voice.ended).toBe("limit");
+      expect(s.snapshot.limitReached).toBe(true);
+    });
+
+    it("is resting on voice_resting", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "error", code: "voice_resting", message: "" });
+      expect(s.snapshot.voice.ended).toBe("resting");
+    });
+
+    it("is connect when connect throws", async () => {
+      const { s } = await voiceReady();
+      s.stopVoice();
+      expect(s.snapshot.voice.ended).toBeNull(); // the visitor ended it
+      t += 600_000; // the session expired, and the assistant is now off
+      sessionOff = true;
+      await s.startVoice();
+      expect(s.snapshot.voice).toMatchObject({ state: "off", ended: "connect" });
+    });
+
+    it.each([
+      ["NotAllowedError", "mic_blocked"],
+      ["SecurityError", "mic_blocked"],
+      ["NotFoundError", "mic_missing"],
+      ["OverconstrainedError", "mic_missing"],
+      ["NotReadableError", "mic"],
+    ])("reads a mic %s as %s", async (name, ended) => {
+      vi.mocked(startMic).mockRejectedValueOnce(new DOMException("", name));
+      const { s } = await voiceReady();
+      await until(() => s.snapshot.voice.state === "off");
+      expect(s.snapshot.voice.ended).toBe(ended);
+    });
+
+    it("is cleared by startVoice", async () => {
+      const { s } = await voiceReady();
+      sockets[0]!.serverClose(1006);
+      expect(s.snapshot.voice.ended).toBe("dropped");
+      void s.startVoice();
+      expect(s.snapshot.voice.ended).toBeNull();
+    });
+
+    it("stays null when the protocol is outdated (status says so)", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ ...READY, protocol: PROTOCOL_VERSION + 1 });
+      expect(s.snapshot).toMatchObject({ status: "outdated", voice: { state: "off", ended: null } });
+    });
+  });
+
+  describe("speechFailed", () => {
+    it("is false on every new message", async () => {
+      chats.push(stream(SENTENCES).response);
+      const s = make();
+      await s.ask("hi");
+      expect(s.snapshot.messages.map((m) => m.speechFailed)).toEqual([false, false]);
+    });
+
+    it("marks the voice answer whose speech failed, keeps the notice, and the answer carries on", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      ws.receive({ type: "sentence", turnId: "t1", id: 0, text: "One." });
+      ws.receive({ type: "error", code: "provider", message: SPEECH_OUTPUT_FAILED });
+      expect(s.snapshot.messages[1]).toMatchObject({ speechFailed: true, error: null, pending: true });
+      expect(s.snapshot.notice).toBe(SPEECH_OUTPUT_FAILED);
+    });
+
+    it("marks the latest voice answer when the failure arrives just after turn.end", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      ws.receive({ type: "turn.end", turnId: "t1", record: RECORD });
+      ws.receive({ type: "error", code: "provider", message: SPEECH_OUTPUT_FAILED });
+      expect(s.snapshot.messages[1]?.speechFailed).toBe(true);
+    });
+
+    it("leaves other provider errors alone", async () => {
+      const { s, ws } = await voiceReady();
+      ws.receive({ type: "turn.start", turnId: "t1", question: "q" });
+      ws.receive({ type: "error", code: "provider", message: "Speech recognition stopped. Please reconnect." });
+      expect(s.snapshot.messages[1]?.speechFailed).toBe(false);
+    });
+  });
+
+  describe("setSpeakerMuted", () => {
+    it("mutes the speaker, set before voice starts, and keeps it across a reconnect", async () => {
+      sessionTemplate = { mode: "voice" };
+      const s = make();
+      s.setSpeakerMuted(true);
+      const { ws } = await (async () => {
+        await s.start();
+        const starting = s.startVoice();
+        await until(() => sockets.length === 1);
+        sockets[0]!.open();
+        await starting;
+        sockets[0]!.receive(READY);
+        return { ws: sockets[0]! };
+      })();
+      expect(contexts[0]!.gains[0]!.gain.value).toBe(0);
+      ws.serverClose(1000, "idle");
+      const talking = s.talk();
+      await until(() => sockets.length === 2);
+      sockets[1]!.open();
+      await talking;
+      sockets[1]!.receive(READY);
+      expect(contexts[1]!.gains[0]!.gain.value).toBe(0);
+      s.setSpeakerMuted(false);
+      expect(contexts[1]!.gains[0]!.gain.value).toBe(1);
+    });
+  });
+
+  describe("readLevels", () => {
+    it("reads zeros and null with voice off, and the mic while it is live", async () => {
+      const out = new Float32Array(5).fill(1);
+      const idle = make();
+      expect(idle.readLevels(out)).toBeNull();
+      expect([...out]).toEqual([0, 0, 0, 0, 0]);
+      const { s } = await voiceReady();
+      await until(() => s.snapshot.voice.mic === "live");
+      expect(s.readLevels(out)).toBe("mic");
+      expect([...out]).toEqual([0.5, 0.5, 0.5, 0.5, 0.5]);
+    });
+
+    it("reads the voice while the reply plays", async () => {
+      const { s } = await speaking();
+      const out = new Float32Array(5);
+      expect(s.readLevels(out)).toBe("voice");
+    });
   });
 });

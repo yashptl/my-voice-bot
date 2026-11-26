@@ -84,6 +84,17 @@ npm run gaps:local   # the local one in playground/.wrangler/state
 
 `ASSISTANT_DEMO=1` serves a few scripted replies and silent speech instead of MiniMax. It applies only while `MINIMAX_API_KEY` is missing: a key always wins. Without the key and without the flag the Worker is misconfigured, never quietly a demo: `/assistant/session` answers 503 `not_configured`, the canary fails with `not configured`, and `/assistant/health` says what is missing. `.dev.vars.example` sets the flag; production `wrangler.jsonc` never does.
 
+## Browser client
+
+`src/client` is framework-free and is copied unedited into YashOS (with the zod-free files of `src/protocol`). A page binds to one `AssistantSession` and renders its `snapshot` (`subscribe` notifies on change; `useAssistant` in `src/client/react.ts` wraps both for React). Text: `start()`, `ask(text)`, `stop()`, `reset()`, `dispose()`. Voice, called from a click or key press:
+
+- `startVoice()` connects and turns the mic on; `talk()` does the same when voice is off (reopening it on the same session, so the conversation keeps its history), or turns the mic live now, interrupting the answer in progress. Both resolve once the mic is up, and never reject.
+- `pauseTalking()` lets go of hold-to-talk: the mic sends silence until the turn starts (at most 6 s), then turns off, and no listening window follows that answer.
+- `interrupt()` stops the spoken answer; `stopVoice()` ends voice; `setSpeakerMuted(muted)` silences the answer, which plays on as if audible.
+- `readLevels(out)` fills a `Float32Array` with band levels from 0 to 1 and returns `"mic"`, `"voice"` or null. It allocates nothing, so read it once per animation frame and write the bars directly, not through React state.
+
+`snapshot.voice` holds `state` (the server's turn state), `transcript`, `mic` (`off`, `live` or `muted`), `followUp` (the 8 s listening window after an answer is open), `playing` (the answer and sentence being heard, or null: the page's "speaking") and `ended` (why voice ended: `connect`, `dropped`, `idle`, `mic_blocked`, `mic_missing`, `mic`, `listening`, `resting` or `limit`; null while voice is on or when the visitor ended it). An assistant message has `heardThrough` when its spoken answer was cut off (the last sentence heard, or null for none) and `speechFailed` when its speech failed and the rest is text only. The design is in [docs/superpowers/specs/2026-11-26-voice-view-client-design.md](docs/superpowers/specs/2026-11-26-voice-view-client-design.md).
+
 ## Health, canary and alerts
 
 `GET /assistant/health` returns `ok`, `mode`, `demo`, and `missing`: the names, never the values, of missing required config (`TURNSTILE_SECRET`, `IP_HASH_KEY`, and `MINIMAX_API_KEY` outside demo mode) and, separately, of optional config (`ALERT_TO`). `ok` is false, with status 503, while anything required is missing.

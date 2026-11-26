@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
  */
 const ROOT = resolve(import.meta.dirname, "..");
 const CLIENT = resolve(ROOT, "src/client");
-const PROTOCOL_FILES = ["sse.ts", "version.ts", "audio.ts", "limits.ts"].map((f) => resolve(ROOT, "src/protocol", f));
+const PROTOCOL_FILES = ["sse.ts", "version.ts", "audio.ts", "limits.ts", "voice.ts"].map((f) => resolve(ROOT, "src/protocol", f));
 
 interface Import {
   specifier: string;
@@ -85,7 +85,7 @@ describe("the client can be copied into another bundler", () => {
     expect(bad).toEqual([]);
   });
 
-  it("imports values only from src/client, three protocol files, and react (in react.ts)", () => {
+  it("imports values only from src/client, the zod-free protocol files, and react (in react.ts)", () => {
     const bad: string[] = [];
     for (const [file, imports] of files) {
       for (const i of imports.filter((x) => x.value)) {

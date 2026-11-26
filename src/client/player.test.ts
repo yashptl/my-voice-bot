@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VOICE_FORMAT } from "../protocol/audio";
 import { Player, nextStartTime } from "./player";
+import { FakeAnalyser, FakeGain } from "./testing";
 
 /** 24 kHz s16le PCM: `samples` samples of value `value`. */
 function pcm(samples: number, value = 0): Uint8Array {
@@ -51,6 +52,18 @@ class FakeContext {
   currentTime = 1;
   readonly destination = {};
   readonly sources: FakeSource[] = [];
+  readonly gains: FakeGain[] = [];
+  readonly analysers: FakeAnalyser[] = [];
+  createGain(): FakeGain {
+    const gain = new FakeGain();
+    this.gains.push(gain);
+    return gain;
+  }
+  createAnalyser(): FakeAnalyser {
+    const analyser = new FakeAnalyser();
+    this.analysers.push(analyser);
+    return analyser;
+  }
   createBuffer(_channels: number, length: number, sampleRate: number): FakeBuffer {
     return new FakeBuffer(length, sampleRate);
   }
@@ -105,7 +118,45 @@ describe("Player", () => {
     player.enqueue(0, pcm(2400));
     player.enqueue(0, pcm(2400));
     expect(ctx.sources.map((s) => s.startedAt)).toEqual([expect.closeTo(1.08, 9), expect.closeTo(1.18, 9)]);
-    expect(ctx.sources[0]?.destination).toBe(ctx.destination);
+  });
+
+  it("plays through one gain and one analyser: source -> gain -> analyser -> destination", () => {
+    player.enqueue(0, pcm(2400));
+    player.enqueue(0, pcm(2400));
+    const [gain] = ctx.gains;
+    const [analyser] = ctx.analysers;
+    expect(ctx.gains).toHaveLength(1);
+    expect(ctx.analysers).toHaveLength(1);
+    expect(ctx.sources.map((s) => s.destination)).toEqual([gain, gain]);
+    expect(gain?.connected).toEqual([analyser]);
+    expect(analyser?.connected).toEqual([ctx.destination]);
+  });
+
+  it("setMuted silences the gain, and playback reports as if audible", () => {
+    const started: number[] = [];
+    const onIdle = vi.fn();
+    player.onSentenceStarted((id) => started.push(id));
+    player.onIdle(onIdle);
+    player.setMuted(true);
+    expect(ctx.gains[0]?.gain.value).toBe(0);
+    player.enqueue(0, pcm(2400));
+    expect(ctx.sources[0]?.startedAt).toBeCloseTo(1.08, 9);
+    expect(player.active).toBe(true);
+    vi.advanceTimersByTime(80);
+    expect(started).toEqual([0]);
+    ctx.sources[0]?.end();
+    expect(onIdle).toHaveBeenCalledTimes(1);
+    player.setMuted(false);
+    expect(ctx.gains[0]?.gain.value).toBe(1);
+  });
+
+  it("reads its output's levels", () => {
+    const analyser = ctx.analysers[0]!;
+    analyser.bins = new Uint8Array(analyser.frequencyBinCount).fill(255);
+    const out = new Float32Array(5);
+    player.readLevels(out);
+    expect(analyser.fftSize).toBe(512);
+    expect([...out]).toEqual([1, 1, 1, 1, 1]);
   });
 
   it("starts after the lead again once the queue has run dry", () => {
@@ -138,6 +189,21 @@ describe("Player", () => {
     vi.advanceTimersByTime(200);
     expect(started).toEqual([0, 1]);
     expect(player.lastStartedSentenceId).toBe(1);
+  });
+
+  it("reports a sentence again when its audio resumes after the queue ran dry", () => {
+    const started: number[] = [];
+    player.onSentenceStarted((id) => started.push(id));
+    player.enqueue(0, pcm(2400));
+    vi.advanceTimersByTime(80);
+    ctx.sources[0]?.end(); // speech synthesis fell behind: the queue runs dry mid-sentence
+    ctx.currentTime = 2;
+    player.enqueue(0, pcm(2400));
+    vi.advanceTimersByTime(79);
+    expect(started).toEqual([0]);
+    vi.advanceTimersByTime(1);
+    expect(started).toEqual([0, 0]);
+    expect(player.lastStartedSentenceId).toBe(0);
   });
 
   it("goes idle once every queued chunk has ended", () => {
