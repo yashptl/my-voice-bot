@@ -33,12 +33,16 @@ const config = JSON.parse(stripComments(readFileSync("wrangler.jsonc", "utf8")))
 };
 
 /**
- * Production is reachable only through one route on the site's zone; the site's own Worker serves
- * everything else. Staging is a separate Worker on workers.dev, so it must not inherit the route.
+ * Production is reachable only through /assistant/* on the site's zone, on both hosts the site
+ * serves; the site's own Worker serves everything else. Staging is a separate Worker on workers.dev,
+ * so it must not inherit the routes.
  */
 describe("wrangler.jsonc", () => {
-  it("serves production only on yashos.dev/assistant/*, with no workers.dev or preview URLs", () => {
-    expect(config.routes).toEqual([{ pattern: "yashos.dev/assistant/*", zone_name: "yashos.dev" }]);
+  it("serves production only on yashos.dev/assistant/* and www.yashos.dev/assistant/*, with no workers.dev or preview URLs", () => {
+    expect(config.routes).toEqual([
+      { pattern: "yashos.dev/assistant/*", zone_name: "yashos.dev" },
+      { pattern: "www.yashos.dev/assistant/*", zone_name: "yashos.dev" },
+    ]);
     expect(config.workers_dev).toBe(false);
     expect(config.preview_urls).toBe(false);
   });

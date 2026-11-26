@@ -1,4 +1,5 @@
 import { MIC_FRAME_BYTES } from "../protocol/audio";
+import { Meter } from "./levels";
 
 /** The live microphone, or a recorded question (any format the browser can decode). */
 export type MicSource = "mic" | { file: ArrayBuffer };
@@ -7,6 +8,19 @@ export interface Mic {
   stop(): void;
   /** Muted keeps sending frames in real time, zeroed. */
   setMuted(muted: boolean): void;
+  /** Fills `out` with the input's band levels, 0 to 1 (muted or not). Allocates nothing. */
+  readLevels(out: Float32Array): void;
+}
+
+/** Why the mic could not start: refused, not there, or anything else (including the worklet). */
+export type MicFailure = "mic_blocked" | "mic_missing" | "mic";
+
+/** Classifies what startMic (or VoiceSession.talk) threw, by the error's name. */
+export function micFailure(err: unknown): MicFailure {
+  const name = typeof err === "object" && err !== null && "name" in err ? String(err.name) : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return "mic_blocked";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "mic_missing";
+  return "mic";
 }
 
 const workletLoads = new WeakMap<BaseAudioContext, Promise<void>>();
@@ -47,12 +61,31 @@ export async function startMic(o: {
   onFrame(frame: ArrayBuffer): void;
 }): Promise<Mic> {
   const { context, source } = o;
+  // An insecure page has no mediaDevices; say so as the browser says "no microphone".
+  if (source === "mic" && !navigator.mediaDevices?.getUserMedia) {
+    throw new DOMException("This page cannot use the microphone.", "NotFoundError");
+  }
   await loadWorklet(context, o.workletUrl);
-  // Open the mic last, so nothing after it can fail and leave it running.
+  // Open the mic last, so little after it can fail and leave it running.
   // decodeAudioData detaches its argument; copy so the caller can reuse the file.
   const decoded = source === "mic" ? null : await context.decodeAudioData(source.file.slice(0));
   const stream = source === "mic" ? await navigator.mediaDevices.getUserMedia({ audio: micConstraints() }) : null;
+  try {
+    return capture(context, stream, decoded, o.onFrame);
+  } catch (err) {
+    // A context closed while the mic prompt was open may refuse new nodes: let go of the mic.
+    for (const track of stream?.getTracks() ?? []) track.stop();
+    throw err;
+  }
+}
 
+/** Wires the input through the capture worklet, with a level meter on the side. */
+function capture(
+  context: AudioContext,
+  stream: MediaStream | null,
+  decoded: AudioBuffer | null,
+  onFrame: (frame: ArrayBuffer) => void,
+): Mic {
   const node = new AudioWorkletNode(context, "capture", {
     numberOfInputs: 1,
     numberOfOutputs: 1,
@@ -63,7 +96,7 @@ export async function startMic(o: {
   let muted = false;
   let stopped = false;
   node.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-    if (!stopped) o.onFrame(muted ? new ArrayBuffer(MIC_FRAME_BYTES) : e.data);
+    if (!stopped) onFrame(muted ? new ArrayBuffer(MIC_FRAME_BYTES) : e.data);
   };
 
   let input: MediaStreamAudioSourceNode | AudioBufferSourceNode;
@@ -74,6 +107,10 @@ export async function startMic(o: {
     input.buffer = decoded;
   }
   input.connect(node);
+  // A side branch for the level bars; it need not reach the destination.
+  const analyser = context.createAnalyser();
+  input.connect(analyser);
+  const meter = new Meter(analyser);
   // The worklet writes no output; connecting it to the destination just guarantees every
   // browser keeps calling process().
   node.connect(context.destination);
@@ -82,6 +119,9 @@ export async function startMic(o: {
   return {
     setMuted(m) {
       muted = m;
+    },
+    readLevels(out) {
+      meter.read(out);
     },
     stop() {
       if (stopped) return;

@@ -10,11 +10,26 @@ import { assistantUrls, DEFAULT_BASE_URL } from "./urls";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
-/** Server events as received, plus the session's own: connection, mic state and client marks. */
+/** The sentence whose audio is playing. Sentence ids restart each turn, so it carries its turn. */
+export interface NowPlaying {
+  turnId: string;
+  sentenceId: number;
+}
+
+/**
+ * Server events as received, plus the session's own: connection (with the close `code` and
+ * `reason` when the socket closed), mic state, the listening window, the sentence playing, the
+ * interrupts and client marks it sent.
+ */
 export type VoiceSessionEvent =
   | ServerEvent
-  | { type: "connection"; status: ConnectionStatus; mode?: AssistantMode; detail?: string }
+  | { type: "connection"; status: ConnectionStatus; mode?: AssistantMode; detail?: string; code?: number; reason?: string }
   | { type: "mic"; state: MicState }
+  /** The listening window after a reply opened (true) or closed. */
+  | { type: "followUp"; open: boolean }
+  /** A sentence's audio started, or (null) nothing is playing any more. */
+  | { type: "playing"; playing: NowPlaying | null }
+  | { type: "interrupt"; turnId: string; lastHeardSentenceId: number | null }
   | { type: "mark"; turnId: string; mark: ClientMark; at: number };
 
 export interface VoiceSessionOptions {
@@ -34,12 +49,15 @@ export type VoiceSessionEventOf<T extends VoiceSessionEventType> = Extract<Voice
  * One voice conversation from the browser (framework-free). connect() opens the session and the
  * voice socket; talk() starts the mic (or a test file); the reply plays as it streams in.
  * Half-duplex: the mic sends zeroed frames while a reply plays and briefly after, stays live for a
- * listening window, then stops until talk(). Client marks (`at` = Date.now()) go to the server and
- * are emitted as "mark" events.
+ * listening window, then stops until talk(). pauseTalking() lets go of hold-to-talk. Client marks
+ * (`at` = Date.now()) go to the server and are emitted as "mark" events.
  */
 export class VoiceSession {
   private readonly listeners = new Map<VoiceSessionEventType, Set<(e: VoiceSessionEvent) => void>>();
-  private readonly gate = new HalfDuplex((state) => this.onMicState(state));
+  private readonly gate = new HalfDuplex(
+    (state) => this.onMicState(state),
+    (open) => this.emit({ type: "followUp", open }),
+  );
   private status: ConnectionStatus = "closed";
   private context: AudioContext | null = null;
   private ws: WebSocket | null = null;
@@ -52,6 +70,8 @@ export class VoiceSession {
   private turnEndAt: number | null = null;
   private firstAudioMarked = false;
   private dropAudio = false;
+  private nowPlaying: NowPlaying | null = null;
+  private speakerMuted = false;
 
   constructor(private readonly options: VoiceSessionOptions = {}) {}
 
@@ -73,7 +93,7 @@ export class VoiceSession {
    * `baseUrl` is where the voice route lives (`<baseUrl>/voice`), absolute or relative to the page.
    */
   async connect(getSession: () => Promise<SessionResponse>, baseUrl: string = DEFAULT_BASE_URL): Promise<void> {
-    this.close();
+    this.shutdown();
     const generation = this.connectGeneration;
     const context = (this.context ??= new AudioContext());
     void context.resume();
@@ -105,18 +125,30 @@ export class VoiceSession {
     ws.addEventListener("close", (e) => {
       if (this.ws !== ws) return;
       this.teardown();
-      this.setStatus("closed", { detail: `socket closed (code ${e.code}${e.reason ? `: ${e.reason}` : ""})` });
+      this.setStatus("closed", {
+        detail: `socket closed (code ${e.code}${e.reason ? `: ${e.reason}` : ""})`,
+        code: e.code,
+        reason: e.reason,
+      });
     });
   }
 
-  /** Starts listening, interrupting any reply that is playing. Call from a click or key press. */
+  /** The voice socket is open (not connecting, closing or closed). */
+  get open(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Starts listening, interrupting the reply in progress (thinking or playing), whose audio would
+   * otherwise mute the mic. Call from a click or key press.
+   */
   async talk(source: MicSource = "mic"): Promise<void> {
     const context = this.context;
     if (!context || this.ws?.readyState !== WebSocket.OPEN) throw new Error("not connected");
     const workletUrl = this.options.workletUrl;
     if (!workletUrl) throw new Error("workletUrl is required for voice");
     void context.resume();
-    if (this.player?.active) this.interrupt();
+    if (this.serverBusy || this.player?.active) this.interrupt();
     this.stopMic();
     const generation = this.micGeneration;
     this.gate.talk();
@@ -133,6 +165,38 @@ export class VoiceSession {
     mic.setMuted(this.gate.state === "muted");
   }
 
+  /**
+   * Lets go of hold-to-talk: the mic sends zeroed frames, so the turn can end with the last words,
+   * until the server starts the turn (at most 6 s), then turns off; no listening window follows that
+   * answer. The next talk() starts the mic again.
+   */
+  pauseTalking(): void {
+    this.gate.pause();
+  }
+
+  /**
+   * Fills `out` (any length) with band levels from 0 to 1: the mic's while it is live, the reply's
+   * while it plays; otherwise zeros, and null. Allocates nothing; meant for every animation frame.
+   */
+  readLevels(out: Float32Array): "mic" | "voice" | null {
+    if (this.mic && this.gate.state === "live") {
+      this.mic.readLevels(out);
+      return "mic";
+    }
+    if (this.player?.active) {
+      this.player.readLevels(out);
+      return "voice";
+    }
+    out.fill(0);
+    return null;
+  }
+
+  /** Silences the reply, which still plays on (timing and the "playing" events as if audible). */
+  setSpeakerMuted(muted: boolean): void {
+    this.speakerMuted = muted;
+    this.player?.setMuted(muted);
+  }
+
   /** Stops the mic, and any reply in progress. */
   stop(): void {
     this.interrupt();
@@ -144,9 +208,10 @@ export class VoiceSession {
     const player = this.player;
     const lastHeardSentenceId = player?.lastStartedSentenceId ?? null;
     const replying = this.serverBusy || (player?.active ?? false);
-    player?.stop();
+    this.stopPlayer();
     if (replying && this.turnId !== null) {
       this.send({ type: "interrupt", turnId: this.turnId, lastHeardSentenceId });
+      this.emit({ type: "interrupt", turnId: this.turnId, lastHeardSentenceId });
       this.dropAudio = true; // frames already in flight for this turn
     }
     this.serverBusy = false;
@@ -154,9 +219,12 @@ export class VoiceSession {
     this.gate.setServerBusy(false);
   }
 
-  /** Closes the socket and stops the mic and playback. connect() may be called again. */
+  /** Closes the socket, stops the mic and playback, and releases the audio context. connect() may be called again. */
   close(): void {
     this.shutdown();
+    const context = this.context;
+    this.context = null;
+    context?.close().catch(() => {});
   }
 
   private shutdown(detail?: string): void {
@@ -171,7 +239,7 @@ export class VoiceSession {
     this.ws = null;
     this.gate.stop();
     this.stopMic();
-    this.player?.stop();
+    this.stopPlayer();
     this.player = null;
     this.serverBusy = false;
     this.turnId = null;
@@ -191,7 +259,7 @@ export class VoiceSession {
         if (event.protocol !== PROTOCOL_VERSION) {
           return this.shutdown(`server speaks protocol ${event.protocol}, this client ${PROTOCOL_VERSION}`);
         }
-        this.player?.stop();
+        this.stopPlayer();
         this.player = this.createPlayer(event.audio);
         break;
       case "state":
@@ -206,8 +274,9 @@ export class VoiceSession {
         break;
       case "turn.start":
         // A new turn supersedes anything still playing from the last one.
-        this.player?.stop();
+        this.stopPlayer();
         this.gate.setPlaying(false);
+        this.gate.turnStarted();
         this.turnId = event.turnId;
         this.dropAudio = false;
         this.firstAudioMarked = false;
@@ -227,13 +296,32 @@ export class VoiceSession {
   private createPlayer(format: AudioFormat): Player {
     if (!this.context) throw new Error("no audio context");
     const player = new Player(this.context, format);
-    player.onSentenceStarted(() => {
+    player.setMuted(this.speakerMuted);
+    // The player's callbacks are single-slot: set once here, and fanned out.
+    player.onSentenceStarted((sentenceId) => {
+      // Audio is only taken after its turn.start, so it belongs to the current turn.
+      if (this.turnId !== null) this.setNowPlaying({ turnId: this.turnId, sentenceId });
       if (this.firstAudioMarked) return;
       this.firstAudioMarked = true;
       this.mark("clientFirstAudioPlayed", Date.now());
     });
-    player.onIdle(() => this.gate.setPlaying(false));
+    player.onIdle(() => {
+      this.setNowPlaying(null);
+      this.gate.setPlaying(false);
+    });
     return player;
+  }
+
+  /** Player.stop() reports no idle, so whatever stops the player clears what is playing here. */
+  private stopPlayer(): void {
+    this.player?.stop();
+    this.setNowPlaying(null);
+  }
+
+  private setNowPlaying(playing: NowPlaying | null): void {
+    if (playing === null && this.nowPlaying === null) return;
+    this.nowPlaying = playing;
+    this.emit({ type: "playing", playing });
   }
 
   private onMicState(state: MicState): void {
@@ -262,7 +350,10 @@ export class VoiceSession {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(frame);
   }
 
-  private setStatus(status: ConnectionStatus, extra: { mode?: AssistantMode; detail?: string } = {}): void {
+  private setStatus(
+    status: ConnectionStatus,
+    extra: { mode?: AssistantMode; detail?: string; code?: number; reason?: string } = {},
+  ): void {
     if (status === this.status && status === "closed") return;
     this.status = status;
     this.emit({ type: "connection", status, ...extra });

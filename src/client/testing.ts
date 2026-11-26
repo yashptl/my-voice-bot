@@ -59,22 +59,81 @@ export class FakeWebSocket {
   }
 }
 
+/** An AnalyserNode whose spectrum the test sets: getByteFrequencyData copies `bins` out. */
+export class FakeAnalyser {
+  fftSize = 2048;
+  smoothingTimeConstant = 0.8;
+  readonly context = { sampleRate: 48_000 };
+  bins = new Uint8Array(0);
+  /** Every buffer getByteFrequencyData was handed, in order. */
+  readonly reads: Uint8Array[] = [];
+  readonly connected: object[] = [];
+  get frequencyBinCount(): number {
+    return this.fftSize / 2;
+  }
+  getByteFrequencyData(out: Uint8Array): void {
+    this.reads.push(out);
+    out.fill(0);
+    out.set(this.bins.subarray(0, out.length));
+  }
+  connect(node: object): void {
+    this.connected.push(node);
+  }
+}
+
+export class FakeGain {
+  readonly gain = { value: 1 };
+  readonly connected: object[] = [];
+  connect(node: object): void {
+    this.connected.push(node);
+  }
+}
+
 export class FakeAudioContext {
   currentTime = 0;
   readonly destination = {};
+  closed = false;
+  readonly analysers: FakeAnalyser[] = [];
+  readonly gains: FakeGain[] = [];
   resume(): Promise<void> {
     return Promise.resolve();
   }
+  close(): Promise<void> {
+    this.closed = true;
+    return Promise.resolve();
+  }
+  createGain(): FakeGain {
+    const gain = new FakeGain();
+    this.gains.push(gain);
+    return gain;
+  }
+  createAnalyser(): FakeAnalyser {
+    const analyser = new FakeAnalyser();
+    this.analysers.push(analyser);
+    return analyser;
+  }
+  readonly sources: FakeBufferSource[] = [];
   createBuffer(_channels: number, length: number) {
     return { getChannelData: () => new Float32Array(length) };
   }
-  createBufferSource() {
-    return {
-      buffer: null,
-      connect() {},
-      start() {},
-      stop() {},
-      addEventListener() {},
-    };
+  createBufferSource(): FakeBufferSource {
+    const source = new FakeBufferSource();
+    this.sources.push(source);
+    return source;
+  }
+}
+
+/** A playing chunk: end() is what the browser does when it finishes. */
+export class FakeBufferSource {
+  buffer: unknown = null;
+  private readonly ended: (() => void)[] = [];
+  connect(): void {}
+  start(): void {}
+  stop(): void {}
+  addEventListener(_type: "ended", fn: () => void): void {
+    this.ended.push(fn);
+  }
+  end(): void {
+    for (const fn of this.ended) fn();
   }
 }

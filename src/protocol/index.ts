@@ -7,3 +7,4 @@ export * from "./refs";
 export * from "./sse";
 export * from "./turn-record";
 export * from "./version";
+export * from "./voice";
